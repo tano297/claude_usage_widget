@@ -18,11 +18,16 @@ TIER="$(jq -r '.claudeAiOauth.rateLimitTier // "unknown"' <<<"$CREDS")"
 VER="$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
 UA="claude-code/${VER:-2.1.0}"
 
+# Pass the bearer token via curl's --config (read from stdin), NOT as a -H argument, so the secret
+# never appears in this process's argv (which any local process could read via `ps`).
 BODY="$(curl -sS https://api.anthropic.com/api/oauth/usage \
-  -H "Authorization: Bearer ${TOKEN}" \
   -H "User-Agent: ${UA}" \
   -H "anthropic-beta: oauth-2025-04-20" \
-  -H "Content-Type: application/json")"
+  -H "Content-Type: application/json" \
+  --config - <<CURLCFG
+header = "Authorization: Bearer ${TOKEN}"
+CURLCFG
+)"
 
 if [[ "$RAW" == "1" ]]; then
   echo "$BODY" | jq .
