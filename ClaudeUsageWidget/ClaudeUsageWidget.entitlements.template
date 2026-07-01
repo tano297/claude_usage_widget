@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Widget extensions must be sandboxed. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- Read-only access to the agent's snapshot file. scripts/configure.sh copies this template
+	     to ClaudeUsageWidget.entitlements (gitignored) with __CLAUDE_USAGE_DIR__ replaced by your
+	     real absolute path (~/Library/Application Support/ClaudeUsage/). Unlike App Groups, a path
+	     exception is honored by free personal-team dev signing — no paid membership required. -->
+	<key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
+	<array>
+		<string>__CLAUDE_USAGE_DIR__/</string>
+	</array>
+</dict>
+</plist>
