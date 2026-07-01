@@ -15,9 +15,10 @@ struct UsageWidgetView: View {
 
 struct MediumUsageView: View {
     let entry: UsageEntry
+
     var body: some View {
         let s = entry.snapshot
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Text("Claude").font(.system(size: 13, weight: .bold))
                 Text(s.planLabel).font(.system(size: 12)).foregroundStyle(.secondary)
@@ -28,7 +29,7 @@ struct MediumUsageView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
             }
-            if s.session == nil && s.weeklyAll == nil && s.weeklyOpus == nil && s.credits == nil {
+            if s.session == nil && s.weeklyAll == nil && (s.weeklyScoped?.isEmpty ?? true) && s.credits == nil {
                 Spacer()
                 Text(s.error ?? "No usage data yet")
                     .font(.system(size: 11))
@@ -36,8 +37,27 @@ struct MediumUsageView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                 Spacer()
             } else {
-                UsageList(snapshot: s, now: entry.date, compact: true)
-                Spacer(minLength: 0)
+                // The widget canvas is a fixed height and cannot scroll, so per-model rows (Opus,
+                // Fable, …) can overflow. Offer progressively denser layouts and let SwiftUI pick
+                // the roomiest one that actually fits — dropping countdowns, then the freshness
+                // line, before anything clips.
+                ViewThatFits(in: .vertical) {
+                    body(s, spacing: 8, showResets: true, showFreshness: true)
+                    body(s, spacing: 5, showResets: true, showFreshness: true)
+                    body(s, spacing: 4, showResets: false, showFreshness: true)
+                    body(s, spacing: 3, showResets: false, showFreshness: false)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+        }
+    }
+
+    /// One density variant: the limit list plus an optional freshness footer. No flexible spacer —
+    /// its natural height must be measurable so `ViewThatFits` can compare variants.
+    private func body(_ s: UsageSnapshot, spacing: CGFloat, showResets: Bool, showFreshness: Bool) -> some View {
+        VStack(alignment: .leading, spacing: spacing) {
+            UsageList(snapshot: s, now: entry.date, compact: true, spacing: spacing, showResets: showResets)
+            if showFreshness {
                 FreshnessRow(snapshot: s, dotSize: 6, font: .system(size: 9))
             }
         }
@@ -49,11 +69,9 @@ struct SmallUsageView: View {
     var body: some View {
         let s = entry.snapshot
         // Most-consumed limit gets the ring.
-        let candidates: [(String, LimitBar)] = [
-            ("Session", s.session),
-            ("Weekly", s.weeklyAll),
-            ("Opus", s.weeklyOpus),
-        ].compactMap { name, bar in bar.map { (name, $0) } }
+        let candidates: [(String, LimitBar)] =
+            [("Session", s.session), ("Weekly", s.weeklyAll)].compactMap { name, bar in bar.map { (name, $0) } }
+            + (s.weeklyScoped ?? []).map { ($0.name, $0.bar) }
         let top = candidates.max(by: { $0.1.percent < $1.1.percent })
 
         return VStack(alignment: .leading, spacing: 4) {

@@ -37,7 +37,7 @@ public enum Severity: String, Codable, Sendable, Equatable {
 
 // MARK: - Model
 
-/// A single limit bar (session, weekly-all, weekly-opus).
+/// A single limit bar (session, weekly-all, a model-scoped weekly window).
 public struct LimitBar: Codable, Sendable, Equatable {
     public var percent: Double
     public var resetsAt: Date?
@@ -47,6 +47,20 @@ public struct LimitBar: Codable, Sendable, Equatable {
         self.percent = percent
         self.resetsAt = resetsAt
         self.severity = severity
+    }
+}
+
+/// A model-scoped weekly limit — e.g. "Weekly · Opus", "Weekly · Fable". The API delivers these
+/// generically as `weekly_scoped` limit entries carrying the model's display name, so the widget
+/// renders whatever models an account has separate caps for instead of hard-coding one.
+public struct ScopedLimit: Codable, Sendable, Equatable, Identifiable {
+    public var name: String
+    public var bar: LimitBar
+    public var id: String { name }
+
+    public init(name: String, bar: LimitBar) {
+        self.name = name
+        self.bar = bar
     }
 }
 
@@ -81,7 +95,9 @@ public struct UsageSnapshot: Codable, Sendable, Equatable {
     public var planLabel: String
     public var session: LimitBar?
     public var weeklyAll: LimitBar?
-    public var weeklyOpus: LimitBar?
+    /// Per-model weekly limits (Opus, Fable, …). Optional so snapshots written by older versions,
+    /// which lack this key, still decode (as `nil`) instead of forcing a "no data" refetch.
+    public var weeklyScoped: [ScopedLimit]?
     public var credits: CreditsInfo?
     public var stale: Bool
     public var error: String?
@@ -90,7 +106,7 @@ public struct UsageSnapshot: Codable, Sendable, Equatable {
                 planLabel: String,
                 session: LimitBar?,
                 weeklyAll: LimitBar?,
-                weeklyOpus: LimitBar?,
+                weeklyScoped: [ScopedLimit]?,
                 credits: CreditsInfo?,
                 stale: Bool,
                 error: String?) {
@@ -98,7 +114,7 @@ public struct UsageSnapshot: Codable, Sendable, Equatable {
         self.planLabel = planLabel
         self.session = session
         self.weeklyAll = weeklyAll
-        self.weeklyOpus = weeklyOpus
+        self.weeklyScoped = weeklyScoped
         self.credits = credits
         self.stale = stale
         self.error = error
@@ -109,7 +125,7 @@ public struct UsageSnapshot: Codable, Sendable, Equatable {
     /// running, unreadable file). `stale` is true and every limit is nil.
     public static func noData(now: Date = Date()) -> UsageSnapshot {
         UsageSnapshot(fetchedAt: now, planLabel: "Claude",
-                      session: nil, weeklyAll: nil, weeklyOpus: nil, credits: nil,
+                      session: nil, weeklyAll: nil, weeklyScoped: nil, credits: nil,
                       stale: true, error: "Waiting for first update — is Claude Usage running?")
     }
 
@@ -121,7 +137,7 @@ public struct UsageSnapshot: Codable, Sendable, Equatable {
             planLabel: "Max (20x)",
             session: LimitBar(percent: 0, resetsAt: now.addingTimeInterval(4 * 3600 + 53 * 60), severity: .normal),
             weeklyAll: LimitBar(percent: 81, resetsAt: now.addingTimeInterval(23 * 60), severity: .warning),
-            weeklyOpus: nil,
+            weeklyScoped: nil,
             credits: CreditsInfo(usedMinor: 0, limitMinor: 30000, balanceMinor: nil, currency: "USD", exponent: 2, resetsAt: firstOfNextMonth(after: now)),
             stale: false,
             error: nil

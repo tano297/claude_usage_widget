@@ -88,7 +88,7 @@ final class UsageAgent: ObservableObject {
     /// Highest active utilization across the limits, for the menu bar glyph.
     var menuBarText: String {
         guard let s = snapshot else { return "—" }
-        let bars = [s.session, s.weeklyAll, s.weeklyOpus].compactMap { $0 }
+        let bars = [s.session, s.weeklyAll].compactMap { $0 } + (s.weeklyScoped ?? []).map(\.bar)
         guard let top = bars.max(by: { $0.percent < $1.percent }) else { return "—" }
         return percentString(top.percent)
     }
@@ -113,7 +113,7 @@ struct MenuContent: View {
                         ProgressView().controlSize(.small)
                     }
                 }
-                let hasData = s.session != nil || s.weeklyAll != nil || s.weeklyOpus != nil || s.credits != nil
+                let hasData = s.session != nil || s.weeklyAll != nil || !(s.weeklyScoped?.isEmpty ?? true) || s.credits != nil
                 if hasData {
                     UsageList(snapshot: s, now: now)
                     FreshnessRow(snapshot: s)
