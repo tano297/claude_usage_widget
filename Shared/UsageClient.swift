@@ -197,6 +197,7 @@ public enum OAuthRefresher {
         var req = URLRequest(url: tokenURL)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue(UsageClient.cachedUserAgent, forHTTPHeaderField: "User-Agent")
         req.timeoutInterval = 20
         let body: [String: Any] = [
@@ -212,9 +213,41 @@ public enum OAuthRefresher {
               let access = json["access_token"] as? String else { return nil }
 
         let newRefresh = (json["refresh_token"] as? String) ?? refreshToken
-        let expiresInSec = (json["expires_in"] as? Double) ?? 8 * 3600
-        let expiresAtMs = Date().addingTimeInterval(expiresInSec).timeIntervalSince1970 * 1000
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        let expiresAtMs: Double
+        if let expiresIn = json["expires_in"] as? Double {
+            expiresAtMs = (nowMs + expiresIn * 1000).rounded()
+        } else if let expAt = json["expires_at"] as? Double {
+            // Accept either seconds or milliseconds.
+            expiresAtMs = (expAt > 1e12 ? expAt : expAt * 1000).rounded()
+        } else {
+            expiresAtMs = (nowMs + 8 * 3600 * 1000).rounded()
+        }
         return Refreshed(accessToken: access, refreshToken: newRefresh, expiresAtMs: expiresAtMs)
+    }
+
+    /// Confirms this process can WRITE the Keychain item by rewriting its current bytes unchanged.
+    /// Called before a real refresh so we NEVER rotate the server-side token without being able to
+    /// persist the result — which would desync (and break) Claude Code's own login.
+    static func probeWriteAccess() -> Bool {
+        #if canImport(Security)
+        let read: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(read as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return false }
+        let match: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+        ]
+        return SecItemUpdate(match as CFDictionary, [kSecValueData as String: data] as CFDictionary) == errSecSuccess
+        #else
+        return false
+        #endif
     }
 
     /// Read-modify-write the Keychain blob, updating only the three token fields. Uses
@@ -236,7 +269,7 @@ public enum OAuthRefresher {
 
         oauth["accessToken"] = tokens.accessToken
         oauth["refreshToken"] = tokens.refreshToken
-        oauth["expiresAt"] = tokens.expiresAtMs
+        oauth["expiresAt"] = Int(tokens.expiresAtMs)   // integer ms, matching Claude Code's format
         root["claudeAiOauth"] = oauth
 
         guard let newData = try? JSONSerialization.data(withJSONObject: root) else { return false }
@@ -259,8 +292,13 @@ public enum OAuthRefresher {
         // Claude Code may already have rotated the token during normal use.
         if !force, let fresh = readClaudeCredentials(), !fresh.expiresSoon() { return fresh }
 
-        guard let refreshToken = creds.refreshToken,
-              let refreshed = await requestRefresh(refreshToken: refreshToken),
+        guard let refreshToken = creds.refreshToken else { return creds }
+
+        // Never rotate the server-side token unless we've just proven we can persist the result —
+        // otherwise a write failure here would desync and break Claude Code's own login.
+        guard probeWriteAccess() else { return creds }
+
+        guard let refreshed = await requestRefresh(refreshToken: refreshToken),
               writeBack(refreshed) else { return creds }
 
         return readClaudeCredentials() ?? creds

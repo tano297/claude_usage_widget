@@ -14,7 +14,8 @@ func eq<T: Equatable>(_ a: T?, _ b: T, _ msg: String, line: UInt = #line) {
 if CommandLine.arguments.contains("--live") {
     let sem = DispatchSemaphore(value: 0)
     Task {
-        let s = await UsageClient.fetchSnapshot()
+        // Read-only diagnostic: never rotate the token from here.
+        let s = await UsageClient.fetchSnapshot(autoRefresh: false)
         print("LIVE snapshot — plan: \(s.planLabel)\(s.stale ? "  [STALE]" : "")")
         if let e = s.error { print("  error: \(e)") }
         func line(_ name: String, _ b: LimitBar?) {

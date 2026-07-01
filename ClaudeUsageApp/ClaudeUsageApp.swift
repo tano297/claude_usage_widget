@@ -12,6 +12,18 @@ import ServiceManagement
 struct ClaudeUsageApp: App {
     @StateObject private var agent = UsageAgent()
 
+    init() {
+        // Hidden diagnostic: verify THIS app's code signature can read AND write the Keychain item
+        // (write access can differ from read). Run:
+        //   /Applications/ClaudeUsage.app/Contents/MacOS/ClaudeUsage --keychain-selftest
+        if CommandLine.arguments.contains("--keychain-selftest") {
+            let st = OAuthRefresher.selfTestWriteBackPreservesSiblings()
+            let canWrite = OAuthRefresher.probeWriteAccess()
+            FileHandle.standardError.write(Data("selfTest=\(st.ok) [\(st.message)] probeWrite=\(canWrite)\n".utf8))
+            exit((st.ok && canWrite) ? 0 : 2)
+        }
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MenuContent(agent: agent)
@@ -52,6 +64,7 @@ final class UsageAgent: ObservableObject {
     }
 
     func refresh() async {
+        guard !isRefreshing else { return }   // serialize: never run two refreshes at once
         isRefreshing = true
         let snap = await UsageClient.fetchSnapshot(autoRefresh: autoRefreshToken)
         try? SharedStore.save(snap)
