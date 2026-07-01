@@ -106,15 +106,17 @@ struct MenuContent: View {
                         ProgressView().controlSize(.small)
                     }
                 }
-                if s.session == nil && s.weeklyAll == nil && s.weeklyOpus == nil && s.credits == nil {
+                let hasData = s.session != nil || s.weeklyAll != nil || s.weeklyOpus != nil || s.credits != nil
+                if hasData {
+                    UsageList(snapshot: s, now: now)
+                } else {
                     Text(s.error ?? "No usage yet.")
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    UsageList(snapshot: s, now: now)
                 }
                 FreshnessRow(snapshot: s)
-                if s.stale, let error = s.error {
+                // Only when we DO have data — otherwise the empty-state text above already shows it.
+                if hasData, s.stale, let error = s.error {
                     Text(error).font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
