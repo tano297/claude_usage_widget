@@ -9,19 +9,14 @@ exactly what it does with it:
   that Claude Code already created on your machine. macOS shows a one-time consent prompt the first
   time (you click *Always Allow*). See `Shared/UsageClient.swift` → `readClaudeCredentials()`.
 - **Sent only to Anthropic.** The access token goes **only** to `https://api.anthropic.com/api/oauth/usage`
-  (as a `Bearer` header — the endpoint Claude Code's `/usage` uses). When auto-refresh is on and the
-  token is expiring, the *refresh* token is sent **only** to `https://platform.claude.com/v1/oauth/token`
-  — the same `client_id` and endpoint Claude Code itself uses. Nothing is sent anywhere else.
+  (as a `Bearer` header — the endpoint Claude Code's `/usage` uses). Nothing is sent anywhere else.
 - **Never written to disk in plaintext, never logged.** Tokens exist only in memory for the duration
   of a request. The only file persisted is the parsed usage snapshot (percentages, reset times, plan
   label, credit totals) at `~/Library/Application Support/ClaudeUsage/usage.json` — it contains **no
   token**. Grep the source: the access token is only interpolated into the `Authorization` header.
-- **Token auto-refresh writes back to the Keychain, safely.** When the token is refreshed, the
-  rotated `accessToken`/`refreshToken`/`expiresAt` are written back into the **same** Keychain item
-  via a read-modify-write that preserves every other key (e.g. all `mcpOAuth` entries), keeping
-  Claude Code in sync. A regression self-test (`swift run DataLayerCheck --writeback-test`) verifies
-  this rewrite changes nothing but the token fields. A failed refresh writes nothing. Turn the whole
-  behavior off with the menu-bar toggle "Refresh token automatically".
+- **Never modifies Claude Code credentials.** The app does not refresh tokens, rewrite the
+  Keychain item, or delete anything from Keychain. If the token expires, the widget shows a stale
+  snapshot until Claude Code refreshes its own credential.
 - **No telemetry, no network calls of our own.** There is no analytics, no third-party SDK, and no
   server. Everything runs on your Mac.
 

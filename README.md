@@ -68,10 +68,11 @@ ClaudeUsage.app  ──►  GET https://api.anthropic.com/api/oauth/usage
 ClaudeUsageWidget  (sandboxed WidgetKit extension) → renders in Notification Center
 ```
 
-The agent owns auth + network because a sandboxed widget can't read Claude Code's Keychain item or
-refresh an expired token. The widget reads one plain JSON file through a read-only sandbox
-*path exception* — deliberately **not** an App Group, which on macOS needs a paid developer account.
-A path exception is honored by **free personal-team** signing, so no paid membership is required.
+The agent owns auth + network because a sandboxed widget can't read Claude Code's Keychain item.
+The app only reads Claude Code's token; it never refreshes, rewrites, or deletes that Keychain item.
+The widget reads one plain JSON file through a read-only sandbox *path exception* — deliberately
+**not** an App Group, which on macOS needs a paid developer account. A path exception is honored by
+**free personal-team** signing, so no paid membership is required.
 
 ## Requirements
 
@@ -134,13 +135,9 @@ bash scripts/fetch_usage.sh        # the same request in shell form
 
 - The agent polls every 3 minutes (`UsageAgent.refreshInterval`), writes `usage.json`, and reloads
   the widget; WidgetKit also self-refreshes countdowns roughly every 15 minutes.
-- **Token auto-refresh (on by default).** As the ~8h OAuth token nears expiry, the agent refreshes
-  it via the refresh-token grant and writes the rotated tokens **back into the same Keychain blob**
-  (preserving every sibling key), so the widget stays fresh even when Claude Code has been idle and
-  Claude Code keeps working seamlessly. It first re-reads the Keychain in case Claude Code already
-  refreshed, and a failed refresh writes nothing and just falls back to the last snapshot. Toggle it
-  off from the menu-bar icon ("Refresh token automatically"). The client_id and token endpoint are
-  the same ones Claude Code itself uses.
+- **Token handling is read-only.** The token lasts about 8 hours and Claude Code refreshes it during
+  normal use. If it expires while Claude Code is idle, the widget shows the last snapshot as stale
+  until Claude Code refreshes the credential again.
 
 ## Security
 

@@ -14,8 +14,7 @@ func eq<T: Equatable>(_ a: T?, _ b: T, _ msg: String, line: UInt = #line) {
 if CommandLine.arguments.contains("--live") {
     let sem = DispatchSemaphore(value: 0)
     Task {
-        // Read-only diagnostic: never rotate the token from here.
-        let (s, _) = await UsageClient.fetchSnapshot(autoRefresh: false)
+        let (s, _) = await UsageClient.fetchSnapshot()
         print("LIVE snapshot — plan: \(s.planLabel)\(s.stale ? "  [STALE]" : "")")
         if let e = s.error { print("  error: \(e)") }
         func line(_ name: String, _ b: LimitBar?) {
@@ -35,15 +34,6 @@ if CommandLine.arguments.contains("--live") {
     }
     sem.wait()
     exit(0)
-}
-
-// Keychain write-back safety self-test: proves the refresh write path preserves every sibling
-// key and does not change the token. Does NOT rotate anything.
-if CommandLine.arguments.contains("--writeback-test") {
-    let r = OAuthRefresher.selfTestWriteBackPreservesSiblings()
-    print("Keychain write-back self-test: \(r.ok ? "PASS" : "FAIL")")
-    print("  \(r.message)")
-    exit(r.ok ? 0 : 1)
 }
 
 let repoRoot = URL(fileURLWithPath: #filePath)
