@@ -132,6 +132,15 @@ public struct ClaudeCredentials: Sendable {
     public let rateLimitTier: String?
     public let subscriptionType: String?
 
+    public init(accessToken: String, refreshToken: String?, expiresAt: Date?,
+                rateLimitTier: String?, subscriptionType: String?) {
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.expiresAt = expiresAt
+        self.rateLimitTier = rateLimitTier
+        self.subscriptionType = subscriptionType
+    }
+
     public var isExpired: Bool {
         guard let expiresAt else { return false }
         return expiresAt < Date()
@@ -247,7 +256,10 @@ public enum UsageClient {
     /// snapshot marked stale.
     public static func fetchSnapshot(now: Date = Date(),
                                      using provided: ClaudeCredentials? = nil) async -> (snapshot: UsageSnapshot, creds: ClaudeCredentials?, retryAfter: TimeInterval?) {
-        guard let creds = provided ?? readClaudeCredentials() else {
+        // Ignore a cached token that's expiring: re-read the Keychain to pick up Claude Code's
+        // refreshed token, so a long-running agent never gets stuck retrying an expired token.
+        let usableProvided = (provided?.expiresSoon() ?? false) ? nil : provided
+        guard let creds = usableProvided ?? readClaudeCredentials() else {
             let s = UsageSnapshot(fetchedAt: now, planLabel: "Claude",
                                   session: nil, weeklyAll: nil, weeklyOpus: nil, credits: nil,
                                   stale: true,
@@ -260,6 +272,7 @@ public enum UsageClient {
 
         let snapshot: UsageSnapshot
         var retryAfter: TimeInterval?
+        var invalidateCreds = false
         switch result {
         case .success(let data):
             snapshot = (try? UsageParser.parse(data, planLabel: label, now: now, fetchedAt: now))
@@ -267,7 +280,7 @@ public enum UsageClient {
         case .http(let code, let ra):
             let msg: String
             switch code {
-            case 401: msg = "Token expired — open Claude Code to refresh."
+            case 401: msg = "Token expired — open Claude Code to refresh."; invalidateCreds = true
             case 429: msg = "Rate limited by Anthropic — backing off."; retryAfter = ra ?? 90
             default:  msg = "HTTP \(code)"
             }
@@ -275,7 +288,8 @@ public enum UsageClient {
         case .failure(let msg):
             snapshot = degraded(now: now, label: label, error: msg)
         }
-        return (snapshot, creds, retryAfter)
+        // On a 401 the token is bad — return nil creds so the agent re-reads the Keychain next time.
+        return (snapshot, invalidateCreds ? nil : creds, retryAfter)
     }
 
     /// Last-known snapshot marked stale, or an empty stale snapshot if none exists.

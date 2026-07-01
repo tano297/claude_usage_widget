@@ -38,8 +38,8 @@ struct MediumUsageView: View {
             } else {
                 UsageList(snapshot: s, now: entry.date, compact: true)
                 Spacer(minLength: 0)
+                FreshnessRow(snapshot: s, dotSize: 6, font: .system(size: 9))
             }
-            FreshnessRow(snapshot: s, dotSize: 6, font: .system(size: 9))
         }
     }
 }
@@ -76,6 +76,8 @@ struct SmallUsageView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
+                FreshnessRow(snapshot: s, dotSize: 5, font: .system(size: 8))
+                    .frame(maxWidth: .infinity, alignment: .center)
             } else {
                 Spacer()
                 Text(s.error ?? "No data")
@@ -84,8 +86,6 @@ struct SmallUsageView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                 Spacer()
             }
-            FreshnessRow(snapshot: s, dotSize: 5, font: .system(size: 8))
-                .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 }

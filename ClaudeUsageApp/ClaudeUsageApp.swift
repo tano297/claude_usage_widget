@@ -116,15 +116,15 @@ struct MenuContent: View {
                 let hasData = s.session != nil || s.weeklyAll != nil || s.weeklyOpus != nil || s.credits != nil
                 if hasData {
                     UsageList(snapshot: s, now: now)
+                    FreshnessRow(snapshot: s)
+                    if s.stale, let error = s.error {
+                        Text(error).font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 } else {
+                    // No data yet: a single clear message (no misleading "updated 0s ago" row).
                     Text(s.error ?? "No usage yet.")
                         .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                FreshnessRow(snapshot: s)
-                // Only when we DO have data — otherwise the empty-state text above already shows it.
-                if hasData, s.stale, let error = s.error {
-                    Text(error).font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {

@@ -14,12 +14,14 @@ struct UsageProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (UsageEntry) -> Void) {
-        let snap = context.isPreview ? .placeholder() : (SharedStore.load() ?? .placeholder())
+        // Placeholder ONLY for the gallery preview; a real load miss must show the no-data state,
+        // never fabricated numbers presented as current usage.
+        let snap = context.isPreview ? .placeholder() : (SharedStore.load() ?? .noData())
         completion(UsageEntry(date: Date(), snapshot: snap))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<UsageEntry>) -> Void) {
-        let snap = SharedStore.load() ?? .placeholder()
+        let snap = SharedStore.load() ?? .noData()
         let now = Date()
         // Emit a handful of entries at 5-minute steps so the "resets in …" countdowns keep
         // ticking down between agent writes; request a reload after 15 minutes as a fallback.

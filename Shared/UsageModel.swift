@@ -104,7 +104,17 @@ public struct UsageSnapshot: Codable, Sendable, Equatable {
         self.error = error
     }
 
-    /// A placeholder used for the widget gallery / first render before real data lands.
+    /// An explicit "no data yet" state — the widget shows this (a clear message) instead of
+    /// fabricated placeholder numbers when there's no snapshot on disk (first run, agent not
+    /// running, unreadable file). `stale` is true and every limit is nil.
+    public static func noData(now: Date = Date()) -> UsageSnapshot {
+        UsageSnapshot(fetchedAt: now, planLabel: "Claude",
+                      session: nil, weeklyAll: nil, weeklyOpus: nil, credits: nil,
+                      stale: true, error: "Waiting for first update — is Claude Usage running?")
+    }
+
+    /// Fake but representative data — used ONLY for the WidgetKit gallery/preview, never as a
+    /// stand-in for real usage (that would fabricate numbers).
     public static func placeholder(now: Date = Date()) -> UsageSnapshot {
         UsageSnapshot(
             fetchedAt: now,
