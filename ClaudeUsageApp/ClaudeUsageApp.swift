@@ -47,6 +47,12 @@ final class UsageAgent: ObservableObject {
 
     init() {
         snapshot = SharedStore.load()
+        // Bulletproof launch: enable the login item on first run so the agent (and thus the widget)
+        // stays live across reboots. Only once — if you later turn it off in the menu, that sticks.
+        if !UserDefaults.standard.bool(forKey: "didAutoEnableLoginItem") {
+            UserDefaults.standard.set(true, forKey: "didAutoEnableLoginItem")
+            setLaunchAtLogin(true)
+        }
         Task { await refresh() }
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { await self?.refresh() }
@@ -91,6 +97,7 @@ final class UsageAgent: ObservableObject {
 struct MenuContent: View {
     @ObservedObject var agent: UsageAgent
     @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
+    @State private var loginItemNote: String?
     // Ticks once a minute so the popover's countdowns stay live while open.
     @State private var now = Date()
     private let tick = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -128,10 +135,26 @@ struct MenuContent: View {
 
             Toggle("Launch at login", isOn: Binding(
                 get: { launchAtLogin },
-                set: { on in launchAtLogin = on; setLaunchAtLogin(on) }
+                set: { on in
+                    loginItemNote = setLaunchAtLogin(on)
+                    launchAtLogin = (SMAppService.mainApp.status == .enabled)   // reflect reality, not intent
+                }
             ))
             .toggleStyle(.checkbox)
             .font(.caption)
+
+            if let loginItemNote {
+                Button { SMAppService.openSystemSettingsLoginItems() } label: {
+                    Label(loginItemNote, systemImage: "exclamationmark.triangle")
+                        .font(.caption2).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Text("Runs in the background and updates every \(Int(agent.refreshInterval / 60)) min. Tap ↻ on the widget for an instant refresh.")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack {
                 Button {
@@ -149,17 +172,30 @@ struct MenuContent: View {
         .onReceive(tick) { now = $0 }
         .onAppear {
             now = Date()
+            launchAtLogin = (SMAppService.mainApp.status == .enabled)   // stay in sync with the system
             Task { await agent.refresh() }   // force a fresh reading whenever you open the menu
         }
     }
 }
 
-func setLaunchAtLogin(_ enabled: Bool) {
+/// Registers/unregisters the app as a login item. Returns a user-facing note on failure or when
+/// macOS parks it pending approval, else nil. Requires the app to be signed and in a stable
+/// location (e.g. /Applications) — SMAppService silently refuses a DerivedData/quarantined copy.
+@discardableResult
+func setLaunchAtLogin(_ enabled: Bool) -> String? {
     do {
-        if enabled { try SMAppService.mainApp.register() }
-        else { try SMAppService.mainApp.unregister() }
+        if enabled {
+            try SMAppService.mainApp.register()
+            if SMAppService.mainApp.status == .requiresApproval {
+                return "Enable “Claude Usage” in System Settings ▸ General ▸ Login Items."
+            }
+        } else {
+            try SMAppService.mainApp.unregister()
+        }
+        return nil
     } catch {
         NSLog("ClaudeUsage: login item toggle failed: \(error.localizedDescription)")
+        return "Couldn't update the login item — open Login Items settings."
     }
 }
 

@@ -131,13 +131,36 @@ bash scripts/fetch_usage.sh        # the same request in shell form
 | `scripts/fetch_usage.sh` | The live request in shell form (handy for debugging) |
 | `project.yml` | XcodeGen spec → `ClaudeUsage.xcodeproj` |
 
-## How data refreshes
+## How it runs
 
-- The agent polls every 3 minutes (`UsageAgent.refreshInterval`), writes `usage.json`, and reloads
-  the widget; WidgetKit also self-refreshes countdowns roughly every 15 minutes.
-- **Token handling is read-only.** The token lasts about 8 hours and Claude Code refreshes it during
-  normal use. If it expires while Claude Code is idle, the widget shows the last snapshot as stale
-  until Claude Code refreshes the credential again.
+Two pieces:
+
+1. **`ClaudeUsage.app` — a background menu-bar agent** (no Dock icon). It reads the token, calls the
+   usage endpoint, writes `~/Library/Application Support/ClaudeUsage/usage.json`, and reloads the
+   widget. It's the only piece that does any work; the widget just draws its output.
+2. **The WidgetKit extension** — renders that JSON in Notification Center / on the desktop.
+
+**Launch at login (bulletproof).** The agent must be running for the widget to stay current, so on
+its **first launch it enables itself as a login item automatically** (you'll see "Claude Usage" in
+System Settings ▸ General ▸ Login Items). You can toggle this any time from the menu-bar icon; if
+macOS parks it as "needs approval," the menu shows a one-tap shortcut to the Login Items settings.
+Keep the app in **/Applications** — `SMAppService` won't register a copy run from DerivedData or a
+quarantined download.
+
+**Verify it's running:** `pgrep -lf ClaudeUsage.app/Contents/MacOS/ClaudeUsage` (should print a PID),
+or just open the menu-bar gauge — the freshness row shows a green "Updated … ago".
+
+## How often it updates
+
+- **Automatically every 3 minutes** (`UsageAgent.refreshInterval`) in the background.
+- **On demand, instantly:** open the menu-bar popover, or tap **↻** on the widget (which signals the
+  agent to fetch right then).
+- All triggers are **coalesced to ≤1 request per 20 s** and a **429 backs off** (honoring
+  `Retry-After`), so the app never trips Anthropic's rate limits. The "Updated … ago" label always
+  shows the true age; WidgetKit repaints the widget on its own budget between fetches.
+- **Token handling is read-only.** The token lasts ~8 h and Claude Code refreshes it during normal
+  use. If it expires while Claude Code is idle, the widget shows the last snapshot as **stale** until
+  Claude Code refreshes its own credential — this app never writes to the Keychain.
 
 ## Security
 
