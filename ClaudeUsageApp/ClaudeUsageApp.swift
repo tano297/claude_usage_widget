@@ -45,6 +45,12 @@ final class UsageAgent: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { await self?.refresh() }
         }
+        // The widget's refresh button posts a Darwin signal → do a live fetch here.
+        RefreshSignal.startObserving()
+        NotificationCenter.default.addObserver(forName: RefreshSignal.didRequestRefresh,
+                                               object: nil, queue: .main) { [weak self] _ in
+            Task { await self?.refresh() }
+        }
     }
 
     func refresh() async {
@@ -85,16 +91,18 @@ struct MenuContent: View {
                         ProgressView().controlSize(.small)
                     }
                 }
-                UsageList(snapshot: s, now: now)
+                if s.session == nil && s.weeklyAll == nil && s.weeklyOpus == nil && s.credits == nil {
+                    Text(s.error ?? "No usage yet.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    UsageList(snapshot: s, now: now)
+                }
+                FreshnessRow(snapshot: s, now: now)
                 if s.stale, let error = s.error {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                    Text(error).font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Text("Updated \(relativeTime(s.fetchedAt, now))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             } else {
                 Text("Loading usage…").foregroundStyle(.secondary)
             }
@@ -122,6 +130,10 @@ struct MenuContent: View {
         .padding(14)
         .frame(width: 290)
         .onReceive(tick) { now = $0 }
+        .onAppear {
+            now = Date()
+            Task { await agent.refresh() }   // force a fresh reading whenever you open the menu
+        }
     }
 }
 
@@ -134,8 +146,3 @@ func setLaunchAtLogin(_ enabled: Bool) {
     }
 }
 
-func relativeTime(_ date: Date, _ now: Date) -> String {
-    let f = RelativeDateTimeFormatter()
-    f.unitsStyle = .abbreviated
-    return f.localizedString(for: date, relativeTo: now)
-}

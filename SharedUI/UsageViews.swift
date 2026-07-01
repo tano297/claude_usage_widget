@@ -88,6 +88,27 @@ struct UsageList: View {
     }
 }
 
+/// "Updated 12s ago" (green) or "Stale · updated 9m ago" (orange). Shared by the menu and widget.
+struct FreshnessRow: View {
+    let snapshot: UsageSnapshot
+    let now: Date
+    var dotSize: CGFloat = 7
+    var font: Font = .caption2
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(snapshot.stale ? Color.orange : Color.green)
+                .frame(width: dotSize, height: dotSize)
+            Text(snapshot.stale
+                 ? "Stale · updated \(relativeAgeString(snapshot.fetchedAt, from: now))"
+                 : "Updated \(relativeAgeString(snapshot.fetchedAt, from: now))")
+                .foregroundStyle(snapshot.stale ? Color.orange : Color.secondary)
+        }
+        .font(font)
+    }
+}
+
 /// A percentage ring for the small widget.
 struct UsageRing: View {
     let percent: Double
