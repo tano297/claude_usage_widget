@@ -8,14 +8,20 @@ exactly what it does with it:
 - **Read locally.** The token is read from the macOS **Keychain** item `Claude Code-credentials`
   that Claude Code already created on your machine. macOS shows a one-time consent prompt the first
   time (you click *Always Allow*). See `Shared/UsageClient.swift` → `readClaudeCredentials()`.
-- **Sent to exactly one place.** The token is sent **only** to `https://api.anthropic.com/api/oauth/usage`
-  as a `Bearer` `Authorization` header — the same first-party Anthropic endpoint Claude Code's
-  `/usage` uses. It is never sent anywhere else.
-- **Never written to disk, never logged.** The token exists only in memory for the duration of a
-  request. The only thing persisted is the parsed usage snapshot (percentages, reset times, plan
-  label, credit totals) at `~/Library/Application Support/ClaudeUsage/usage.json`. That file
-  contains **no token**. Grep the source: the access token is only ever interpolated into the
-  `Authorization` header.
+- **Sent only to Anthropic.** The access token goes **only** to `https://api.anthropic.com/api/oauth/usage`
+  (as a `Bearer` header — the endpoint Claude Code's `/usage` uses). When auto-refresh is on and the
+  token is expiring, the *refresh* token is sent **only** to `https://platform.claude.com/v1/oauth/token`
+  — the same `client_id` and endpoint Claude Code itself uses. Nothing is sent anywhere else.
+- **Never written to disk in plaintext, never logged.** Tokens exist only in memory for the duration
+  of a request. The only file persisted is the parsed usage snapshot (percentages, reset times, plan
+  label, credit totals) at `~/Library/Application Support/ClaudeUsage/usage.json` — it contains **no
+  token**. Grep the source: the access token is only interpolated into the `Authorization` header.
+- **Token auto-refresh writes back to the Keychain, safely.** When the token is refreshed, the
+  rotated `accessToken`/`refreshToken`/`expiresAt` are written back into the **same** Keychain item
+  via a read-modify-write that preserves every other key (e.g. all `mcpOAuth` entries), keeping
+  Claude Code in sync. A regression self-test (`swift run DataLayerCheck --writeback-test`) verifies
+  this rewrite changes nothing but the token fields. A failed refresh writes nothing. Turn the whole
+  behavior off with the menu-bar toggle "Refresh token automatically".
 - **No telemetry, no network calls of our own.** There is no analytics, no third-party SDK, and no
   server. Everything runs on your Mac.
 

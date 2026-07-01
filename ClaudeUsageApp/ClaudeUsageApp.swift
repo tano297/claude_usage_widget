@@ -12,6 +12,18 @@ import ServiceManagement
 struct ClaudeUsageApp: App {
     @StateObject private var agent = UsageAgent()
 
+    init() {
+        // Hidden diagnostic: verify THIS app's code signature can read AND write the Keychain item
+        // (write access can differ from read). Run:
+        //   /Applications/ClaudeUsage.app/Contents/MacOS/ClaudeUsage --keychain-selftest
+        if CommandLine.arguments.contains("--keychain-selftest") {
+            let st = OAuthRefresher.selfTestWriteBackPreservesSiblings()
+            let canWrite = OAuthRefresher.probeWriteAccess()
+            FileHandle.standardError.write(Data("selfTest=\(st.ok) [\(st.message)] probeWrite=\(canWrite)\n".utf8))
+            exit((st.ok && canWrite) ? 0 : 2)
+        }
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MenuContent(agent: agent)
@@ -31,11 +43,23 @@ final class UsageAgent: ObservableObject {
     @Published private(set) var snapshot: UsageSnapshot?
     @Published private(set) var isRefreshing = false
 
-    /// v1 fixed cadence. WidgetKit also self-refreshes countdowns between writes.
+    /// When on, the agent refreshes the OAuth token via its refresh token as it nears expiry, so
+    /// the widget stays fresh even when Claude Code has been idle > ~8h. Persisted; default on.
+    @Published var autoRefreshToken: Bool {
+        didSet { UserDefaults.standard.set(autoRefreshToken, forKey: Self.autoRefreshKey) }
+    }
+    static let autoRefreshKey = "autoRefreshToken"
+
+    /// Fixed cadence. WidgetKit also self-refreshes countdowns between writes.
     let refreshInterval: TimeInterval = 180
     private var timer: Timer?
 
+    /// In-memory credential cache so normal polls never hit the Keychain (which is what triggers the
+    /// macOS access prompt). Read from the Keychain only at first launch and near token expiry.
+    private var cachedCreds: ClaudeCredentials?
+
     init() {
+        autoRefreshToken = (UserDefaults.standard.object(forKey: Self.autoRefreshKey) as? Bool) ?? true
         snapshot = SharedStore.load()
         Task { await refresh() }
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
@@ -44,8 +68,10 @@ final class UsageAgent: ObservableObject {
     }
 
     func refresh() async {
+        guard !isRefreshing else { return }   // serialize: never run two refreshes at once
         isRefreshing = true
-        let snap = await UsageClient.fetchSnapshot()
+        let (snap, creds) = await UsageClient.fetchSnapshot(autoRefresh: autoRefreshToken, using: cachedCreds)
+        cachedCreds = creds   // reuse next time; nil re-reads the Keychain (e.g. after "Token expired")
         try? SharedStore.save(snap)
         snapshot = snap
         isRefreshing = false
@@ -101,6 +127,10 @@ struct MenuContent: View {
             ))
             .toggleStyle(.checkbox)
             .font(.caption)
+
+            Toggle("Refresh token automatically", isOn: $agent.autoRefreshToken)
+                .toggleStyle(.checkbox)
+                .font(.caption)
 
             HStack {
                 Button {

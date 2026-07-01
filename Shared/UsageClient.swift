@@ -127,6 +127,7 @@ public enum UsageParser {
 
 public struct ClaudeCredentials: Sendable {
     public let accessToken: String
+    public let refreshToken: String?
     public let expiresAt: Date?
     public let rateLimitTier: String?
     public let subscriptionType: String?
@@ -134,6 +135,12 @@ public struct ClaudeCredentials: Sendable {
     public var isExpired: Bool {
         guard let expiresAt else { return false }
         return expiresAt < Date()
+    }
+
+    /// True if the token is expired or expires within `seconds`.
+    public func expiresSoon(within seconds: TimeInterval = 120) -> Bool {
+        guard let expiresAt else { return false }
+        return expiresAt < Date().addingTimeInterval(seconds)
     }
 }
 
@@ -154,6 +161,7 @@ public func readClaudeCredentials() -> ClaudeCredentials? {
     struct Blob: Decodable {
         struct OAuth: Decodable {
             let accessToken: String
+            let refreshToken: String?
             let expiresAt: Double?
             let subscriptionType: String?
             let rateLimitTier: String?
@@ -163,11 +171,188 @@ public func readClaudeCredentials() -> ClaudeCredentials? {
     guard let blob = try? JSONDecoder().decode(Blob.self, from: data) else { return nil }
     let expires = blob.claudeAiOauth.expiresAt.map { Date(timeIntervalSince1970: $0 / 1000) }
     return ClaudeCredentials(accessToken: blob.claudeAiOauth.accessToken,
+                             refreshToken: blob.claudeAiOauth.refreshToken,
                              expiresAt: expires,
                              rateLimitTier: blob.claudeAiOauth.rateLimitTier,
                              subscriptionType: blob.claudeAiOauth.subscriptionType)
     #else
     return nil
+    #endif
+}
+
+// MARK: - OAuth token refresh (keeps the widget fresh when Claude Code is idle > ~8h)
+
+/// Refreshes the Keychain OAuth token using the refresh-token grant, then writes the rotated
+/// tokens back into the SAME Keychain blob (preserving every sibling key, e.g. `mcpOAuth`) so
+/// Claude Code and this agent stay in sync. Values below are taken verbatim from Claude Code's
+/// own binary: CLIENT_ID `9d1c250a-…` and TOKEN_URL `https://platform.claude.com/v1/oauth/token`.
+public enum OAuthRefresher {
+    static let clientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    static let tokenURL = URL(string: "https://platform.claude.com/v1/oauth/token")!
+
+    struct Refreshed { let accessToken: String; let refreshToken: String; let expiresAtMs: Double }
+
+    /// POST the refresh-token grant. Returns nil (and rotates nothing) on any non-200 / parse error.
+    static func requestRefresh(refreshToken: String) async -> Refreshed? {
+        var req = URLRequest(url: tokenURL)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue(UsageClient.cachedUserAgent, forHTTPHeaderField: "User-Agent")
+        req.timeoutInterval = 20
+        let body: [String: Any] = [
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken,
+            "client_id": clientID,
+        ]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200,
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let access = json["access_token"] as? String else { return nil }
+
+        let newRefresh = (json["refresh_token"] as? String) ?? refreshToken
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        let expiresAtMs: Double
+        if let expiresIn = json["expires_in"] as? Double {
+            expiresAtMs = (nowMs + expiresIn * 1000).rounded()
+        } else if let expAt = json["expires_at"] as? Double {
+            // Accept either seconds or milliseconds.
+            expiresAtMs = (expAt > 1e12 ? expAt : expAt * 1000).rounded()
+        } else {
+            expiresAtMs = (nowMs + 8 * 3600 * 1000).rounded()
+        }
+        return Refreshed(accessToken: access, refreshToken: newRefresh, expiresAtMs: expiresAtMs)
+    }
+
+    /// Confirms this process can WRITE the Keychain item by rewriting its current bytes unchanged.
+    /// Called before a real refresh so we NEVER rotate the server-side token without being able to
+    /// persist the result — which would desync (and break) Claude Code's own login.
+    static func probeWriteAccess() -> Bool {
+        #if canImport(Security)
+        let read: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(read as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return false }
+        let match: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+        ]
+        return SecItemUpdate(match as CFDictionary, [kSecValueData as String: data] as CFDictionary) == errSecSuccess
+        #else
+        return false
+        #endif
+    }
+
+    /// Read-modify-write the Keychain blob, updating only the three token fields. Uses
+    /// JSONSerialization (not Codable) so unknown sibling keys survive untouched.
+    @discardableResult
+    static func writeBack(_ tokens: Refreshed) -> Bool {
+        #if canImport(Security)
+        let read: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(read as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data,
+              var root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              var oauth = root["claudeAiOauth"] as? [String: Any] else { return false }
+
+        oauth["accessToken"] = tokens.accessToken
+        oauth["refreshToken"] = tokens.refreshToken
+        oauth["expiresAt"] = Int(tokens.expiresAtMs)   // integer ms, matching Claude Code's format
+        root["claudeAiOauth"] = oauth
+
+        guard let newData = try? JSONSerialization.data(withJSONObject: root) else { return false }
+        let match: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+        ]
+        return SecItemUpdate(match as CFDictionary, [kSecValueData as String: newData] as CFDictionary) == errSecSuccess
+        #else
+        return false
+        #endif
+    }
+
+    /// Ensure a usable token: if it's expired/near-expiry and auto-refresh is on, first re-read the
+    /// Keychain (Claude Code may have refreshed it already), else perform a refresh + write-back.
+    /// A failed refresh changes nothing and just leaves the (stale) token in place.
+    public static func ensureFresh(_ creds: ClaudeCredentials, autoRefresh: Bool, force: Bool = false) async -> ClaudeCredentials {
+        guard autoRefresh, force || creds.expiresSoon() else { return creds }
+
+        // Claude Code may already have rotated the token during normal use.
+        if !force, let fresh = readClaudeCredentials(), !fresh.expiresSoon() { return fresh }
+
+        guard let refreshToken = creds.refreshToken else { return creds }
+
+        // Never rotate the server-side token unless we've just proven we can persist the result —
+        // otherwise a write failure here would desync and break Claude Code's own login.
+        guard probeWriteAccess() else { return creds }
+
+        guard let refreshed = await requestRefresh(refreshToken: refreshToken),
+              writeBack(refreshed) else { return creds }
+
+        return readClaudeCredentials() ?? creds
+    }
+
+    #if canImport(Security)
+    /// Safety self-test: rewrites the Keychain blob with IDENTICAL data and verifies every sibling
+    /// key survives and the access token is unchanged. Proves the write-back path cannot clobber
+    /// Claude Code's credentials — without rotating any token.
+    public static func selfTestWriteBackPreservesSiblings() -> (ok: Bool, message: String) {
+        let read: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(read as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data,
+              let before = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let oauthBefore = before["claudeAiOauth"] as? [String: Any],
+              let tokenBefore = oauthBefore["accessToken"] as? String else {
+            return (false, "could not read/parse keychain blob")
+        }
+        let topKeysBefore = Set(before.keys)
+        let oauthKeysBefore = Set(oauthBefore.keys)
+
+        guard let same = try? JSONSerialization.data(withJSONObject: before) else {
+            return (false, "could not re-serialize blob")
+        }
+        let match: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+        ]
+        guard SecItemUpdate(match as CFDictionary, [kSecValueData as String: same] as CFDictionary) == errSecSuccess else {
+            return (false, "SecItemUpdate failed")
+        }
+
+        var item2: CFTypeRef?
+        guard SecItemCopyMatching(read as CFDictionary, &item2) == errSecSuccess,
+              let data2 = item2 as? Data,
+              let after = (try? JSONSerialization.jsonObject(with: data2)) as? [String: Any],
+              let oauthAfter = after["claudeAiOauth"] as? [String: Any],
+              let tokenAfter = oauthAfter["accessToken"] as? String else {
+            return (false, "could not re-read after write")
+        }
+        let topOK = Set(after.keys) == topKeysBefore
+        let oauthOK = Set(oauthAfter.keys) == oauthKeysBefore
+        let tokenOK = tokenAfter == tokenBefore
+        let msg = "top-level keys \(topKeysBefore.count)→\(after.keys.count) \(topOK ? "OK" : "MISMATCH"), " +
+                  "oauth keys \(oauthKeysBefore.count)→\(oauthAfter.keys.count) \(oauthOK ? "OK" : "MISMATCH"), " +
+                  "accessToken unchanged \(tokenOK ? "OK" : "CHANGED")"
+        return (topOK && oauthOK && tokenOK, msg)
+    }
     #endif
 }
 
@@ -198,40 +383,63 @@ public enum UsageClient {
         return fallback
     }()
 
-    /// Fetch + parse. On any failure, reuse the last good snapshot (marked stale) so the widget
-    /// keeps showing something useful.
-    public static func fetchSnapshot(now: Date = Date()) async -> UsageSnapshot {
-        guard let creds = readClaudeCredentials() else {
-            return UsageSnapshot(fetchedAt: now, planLabel: "Claude",
-                                 session: nil, weeklyAll: nil, weeklyOpus: nil, credits: nil,
-                                 stale: true,
-                                 error: "No Claude Code credentials found. Sign in with `claude`.")
-        }
-        let label = planLabel(rateLimitTier: creds.rateLimitTier, subscriptionType: creds.subscriptionType)
+    private enum RequestResult { case success(Data); case http(Int); case failure(String) }
 
+    private static func performRequest(accessToken: String) async -> RequestResult {
         var req = URLRequest(url: endpoint)
         req.httpMethod = "GET"
-        req.setValue("Bearer \(creds.accessToken)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         req.setValue(cachedUserAgent, forHTTPHeaderField: "User-Agent")
         req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 20
-
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
-            guard let http = resp as? HTTPURLResponse else {
-                return degraded(now: now, label: label, error: "Bad response from server.")
-            }
-            guard http.statusCode == 200 else {
-                let msg = http.statusCode == 401
-                    ? "Token expired — open Claude Code to refresh."
-                    : "HTTP \(http.statusCode)"
-                return degraded(now: now, label: label, error: msg)
-            }
-            return try UsageParser.parse(data, planLabel: label, now: now, fetchedAt: now)
+            guard let http = resp as? HTTPURLResponse else { return .failure("Bad response from server.") }
+            guard http.statusCode == 200 else { return .http(http.statusCode) }
+            return .success(data)
         } catch {
-            return degraded(now: now, label: label, error: error.localizedDescription)
+            return .failure(error.localizedDescription)
         }
+    }
+
+    /// Fetch + parse. Pass `using` a cached credential to avoid a Keychain read on every call —
+    /// the Keychain is only touched when no credential is supplied or the token is expiring (which
+    /// is what triggers the macOS access prompt). Returns the credential it ended up using so the
+    /// caller can cache it. Refreshes the token when expiring (if `autoRefresh`) and retries once on
+    /// 401. On any failure, reuses the last good snapshot marked stale.
+    public static func fetchSnapshot(now: Date = Date(),
+                                     autoRefresh: Bool = true,
+                                     using provided: ClaudeCredentials? = nil) async -> (snapshot: UsageSnapshot, creds: ClaudeCredentials?) {
+        guard var creds = provided ?? readClaudeCredentials() else {
+            let s = UsageSnapshot(fetchedAt: now, planLabel: "Claude",
+                                  session: nil, weeklyAll: nil, weeklyOpus: nil, credits: nil,
+                                  stale: true,
+                                  error: "No Claude Code credentials found. Sign in with `claude`.")
+            return (s, nil)
+        }
+        // No Keychain access here unless the token is actually expiring.
+        creds = await OAuthRefresher.ensureFresh(creds, autoRefresh: autoRefresh)
+        let label = planLabel(rateLimitTier: creds.rateLimitTier, subscriptionType: creds.subscriptionType)
+
+        var result = await performRequest(accessToken: creds.accessToken)
+        if case .http(401) = result, autoRefresh {
+            creds = await OAuthRefresher.ensureFresh(creds, autoRefresh: true, force: true)
+            result = await performRequest(accessToken: creds.accessToken)
+        }
+
+        let snapshot: UsageSnapshot
+        switch result {
+        case .success(let data):
+            snapshot = (try? UsageParser.parse(data, planLabel: label, now: now, fetchedAt: now))
+                ?? degraded(now: now, label: label, error: "Could not parse usage response.")
+        case .http(let code):
+            let msg = code == 401 ? "Token expired — open Claude Code to refresh." : "HTTP \(code)"
+            snapshot = degraded(now: now, label: label, error: msg)
+        case .failure(let msg):
+            snapshot = degraded(now: now, label: label, error: msg)
+        }
+        return (snapshot, creds)
     }
 
     /// Last-known snapshot marked stale, or an empty stale snapshot if none exists.
