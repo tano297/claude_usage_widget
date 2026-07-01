@@ -98,7 +98,7 @@ struct MenuContent: View {
                 } else {
                     UsageList(snapshot: s, now: now)
                 }
-                FreshnessRow(snapshot: s, now: now)
+                FreshnessRow(snapshot: s)
                 if s.stale, let error = s.error {
                     Text(error).font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

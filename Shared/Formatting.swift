@@ -39,13 +39,6 @@ public func countdownString(to date: Date, from now: Date) -> String {
     return "\(mins)m"
 }
 
-/// "12s ago", "3m ago" — how old a reading is.
-public func relativeAgeString(_ date: Date, from now: Date) -> String {
-    let f = RelativeDateTimeFormatter()
-    f.unitsStyle = .abbreviated
-    return f.localizedString(for: date, relativeTo: now)
-}
-
 // MARK: - Numbers & money
 
 public func percentString(_ p: Double) -> String {
