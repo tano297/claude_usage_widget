@@ -54,6 +54,10 @@ final class UsageAgent: ObservableObject {
     let refreshInterval: TimeInterval = 180
     private var timer: Timer?
 
+    /// In-memory credential cache so normal polls never hit the Keychain (which is what triggers the
+    /// macOS access prompt). Read from the Keychain only at first launch and near token expiry.
+    private var cachedCreds: ClaudeCredentials?
+
     init() {
         autoRefreshToken = (UserDefaults.standard.object(forKey: Self.autoRefreshKey) as? Bool) ?? true
         snapshot = SharedStore.load()
@@ -66,7 +70,8 @@ final class UsageAgent: ObservableObject {
     func refresh() async {
         guard !isRefreshing else { return }   // serialize: never run two refreshes at once
         isRefreshing = true
-        let snap = await UsageClient.fetchSnapshot(autoRefresh: autoRefreshToken)
+        let (snap, creds) = await UsageClient.fetchSnapshot(autoRefresh: autoRefreshToken, using: cachedCreds)
+        cachedCreds = creds   // reuse next time; nil re-reads the Keychain (e.g. after "Token expired")
         try? SharedStore.save(snap)
         snapshot = snap
         isRefreshing = false

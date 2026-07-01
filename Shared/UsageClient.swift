@@ -403,16 +403,22 @@ public enum UsageClient {
         }
     }
 
-    /// Fetch + parse. Refreshes the token first if it's expiring (when `autoRefresh`), and retries
-    /// once on a 401 after forcing a refresh. On any failure, reuses the last good snapshot marked
-    /// stale so the widget keeps showing something useful.
-    public static func fetchSnapshot(now: Date = Date(), autoRefresh: Bool = true) async -> UsageSnapshot {
-        guard var creds = readClaudeCredentials() else {
-            return UsageSnapshot(fetchedAt: now, planLabel: "Claude",
-                                 session: nil, weeklyAll: nil, weeklyOpus: nil, credits: nil,
-                                 stale: true,
-                                 error: "No Claude Code credentials found. Sign in with `claude`.")
+    /// Fetch + parse. Pass `using` a cached credential to avoid a Keychain read on every call —
+    /// the Keychain is only touched when no credential is supplied or the token is expiring (which
+    /// is what triggers the macOS access prompt). Returns the credential it ended up using so the
+    /// caller can cache it. Refreshes the token when expiring (if `autoRefresh`) and retries once on
+    /// 401. On any failure, reuses the last good snapshot marked stale.
+    public static func fetchSnapshot(now: Date = Date(),
+                                     autoRefresh: Bool = true,
+                                     using provided: ClaudeCredentials? = nil) async -> (snapshot: UsageSnapshot, creds: ClaudeCredentials?) {
+        guard var creds = provided ?? readClaudeCredentials() else {
+            let s = UsageSnapshot(fetchedAt: now, planLabel: "Claude",
+                                  session: nil, weeklyAll: nil, weeklyOpus: nil, credits: nil,
+                                  stale: true,
+                                  error: "No Claude Code credentials found. Sign in with `claude`.")
+            return (s, nil)
         }
+        // No Keychain access here unless the token is actually expiring.
         creds = await OAuthRefresher.ensureFresh(creds, autoRefresh: autoRefresh)
         let label = planLabel(rateLimitTier: creds.rateLimitTier, subscriptionType: creds.subscriptionType)
 
@@ -422,18 +428,18 @@ public enum UsageClient {
             result = await performRequest(accessToken: creds.accessToken)
         }
 
+        let snapshot: UsageSnapshot
         switch result {
         case .success(let data):
-            if let snap = try? UsageParser.parse(data, planLabel: label, now: now, fetchedAt: now) {
-                return snap
-            }
-            return degraded(now: now, label: label, error: "Could not parse usage response.")
+            snapshot = (try? UsageParser.parse(data, planLabel: label, now: now, fetchedAt: now))
+                ?? degraded(now: now, label: label, error: "Could not parse usage response.")
         case .http(let code):
             let msg = code == 401 ? "Token expired — open Claude Code to refresh." : "HTTP \(code)"
-            return degraded(now: now, label: label, error: msg)
+            snapshot = degraded(now: now, label: label, error: msg)
         case .failure(let msg):
-            return degraded(now: now, label: label, error: msg)
+            snapshot = degraded(now: now, label: label, error: msg)
         }
+        return (snapshot, creds)
     }
 
     /// Last-known snapshot marked stale, or an empty stale snapshot if none exists.

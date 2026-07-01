@@ -15,7 +15,7 @@ if CommandLine.arguments.contains("--live") {
     let sem = DispatchSemaphore(value: 0)
     Task {
         // Read-only diagnostic: never rotate the token from here.
-        let s = await UsageClient.fetchSnapshot(autoRefresh: false)
+        let (s, _) = await UsageClient.fetchSnapshot(autoRefresh: false)
         print("LIVE snapshot — plan: \(s.planLabel)\(s.stale ? "  [STALE]" : "")")
         if let e = s.error { print("  error: \(e)") }
         func line(_ name: String, _ b: LimitBar?) {
