@@ -31,11 +31,19 @@ final class UsageAgent: ObservableObject {
     @Published private(set) var snapshot: UsageSnapshot?
     @Published private(set) var isRefreshing = false
 
-    /// v1 fixed cadence. WidgetKit also self-refreshes countdowns between writes.
+    /// When on, the agent refreshes the OAuth token via its refresh token as it nears expiry, so
+    /// the widget stays fresh even when Claude Code has been idle > ~8h. Persisted; default on.
+    @Published var autoRefreshToken: Bool {
+        didSet { UserDefaults.standard.set(autoRefreshToken, forKey: Self.autoRefreshKey) }
+    }
+    static let autoRefreshKey = "autoRefreshToken"
+
+    /// Fixed cadence. WidgetKit also self-refreshes countdowns between writes.
     let refreshInterval: TimeInterval = 180
     private var timer: Timer?
 
     init() {
+        autoRefreshToken = (UserDefaults.standard.object(forKey: Self.autoRefreshKey) as? Bool) ?? true
         snapshot = SharedStore.load()
         Task { await refresh() }
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
@@ -45,7 +53,7 @@ final class UsageAgent: ObservableObject {
 
     func refresh() async {
         isRefreshing = true
-        let snap = await UsageClient.fetchSnapshot()
+        let snap = await UsageClient.fetchSnapshot(autoRefresh: autoRefreshToken)
         try? SharedStore.save(snap)
         snapshot = snap
         isRefreshing = false
@@ -101,6 +109,10 @@ struct MenuContent: View {
             ))
             .toggleStyle(.checkbox)
             .font(.caption)
+
+            Toggle("Refresh token automatically", isOn: $agent.autoRefreshToken)
+                .toggleStyle(.checkbox)
+                .font(.caption)
 
             HStack {
                 Button {

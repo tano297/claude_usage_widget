@@ -17,6 +17,26 @@ usage credits — for **any plan** (Pro, Max 5×, Max 20×, credit/overage).
 > **Unofficial.** This reads an *undocumented* Anthropic endpoint and is **not affiliated with or
 > endorsed by Anthropic**. It may break at any time. See [security & disclaimer](#security).
 
+## ⚡ Install with Claude Code (easiest)
+
+Clone the repo, open **Claude Code** in the repo folder, and paste this prompt — it will read the
+docs, check what you're missing, install what it can, guide the manual bits, and set up the widget:
+
+```text
+Install this macOS "Claude Usage" widget for me from this repo.
+1. Read README.md and SECURITY.md, then tell me in 2 lines what the app does with my Claude token.
+2. Check my prerequisites: macOS; Xcode.app installed; Homebrew; that I'm signed into Claude Code
+   (run `claude`); and signed into Xcode with an Apple ID (Settings > Accounts) for a free Personal Team.
+3. Install anything missing that is safe to install non-interactively (e.g. `brew install xcodegen`).
+   If Xcode.app or the Xcode Apple-ID sign-in is missing, walk me through those (they are manual).
+4. Run `./scripts/install.sh` and show me any errors, fixing what you can.
+5. When it builds, tell me to click "Always Allow" on the Keychain prompt, then walk me through
+   adding the "Claude Usage" widget in Notification Center and enabling "Launch at login".
+Explain each step briefly before running it, and never print my token.
+```
+
+Prefer to drive it yourself? Jump to [Manual install](#manual-install).
+
 ## Features
 
 - **Session** (5-hour), **Weekly** (all-models), and **Weekly · Opus** limits — utilization % with
@@ -61,36 +81,39 @@ A path exception is honored by **free personal-team** signing, so no paid member
   (`brew install xcodegen`)
 - A free Apple ID (Personal Team) for local signing — no paid membership needed
 
-## Quick start
+## Manual install
 
-### Verify the data layer first (no Xcode needed)
+Prerequisites: **Xcode.app**, `brew install xcodegen`, and a one-time Xcode sign-in (Settings ▸
+Accounts) for a free Personal Team. Then, from the repo root:
 
 ```bash
-swift run DataLayerCheck          # parser/formatting checks vs. fixtures → "ALL CHECKS PASSED"
-swift run DataLayerCheck --live   # the real pipeline: Keychain → endpoint → parsed snapshot
-bash scripts/fetch_usage.sh       # the same request in shell form
+./scripts/install.sh        # auto-detects your Team ID, configures, builds, installs, launches
+#   make install            # same thing
+#   ./scripts/install.sh <TEAM_ID>   # if auto-detect can't find your team
 ```
 
-### Build & install the widget
+Then: click **Always Allow** on the first-run Keychain prompt → open **Notification Center** →
+**Edit Widgets** → add **Claude Usage** (medium) → and enable **Launch at login** from the
+menu-bar gauge icon so the agent keeps the widget fresh after a reboot.
+
+<details>
+<summary>Prefer to run the steps yourself</summary>
 
 ```bash
-# 1. Point the toolchain at Xcode (once), and install XcodeGen:
-sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 brew install xcodegen
-
-# 2. Sign in to Xcode with your Apple ID (Settings ▸ Accounts) so you have a Personal Team.
-
-# 3. Configure — generates your machine-specific entitlements + the Xcode project:
-./scripts/configure.sh <YOUR_TEAM_ID>
-#    Find TEAM_ID: security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject
-
-# 4. Build & run:
-open ClaudeUsage.xcodeproj        # press ⌘R
+./scripts/configure.sh <TEAM_ID>   # generates entitlements + the Xcode project
+#   Team ID: security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject
+open ClaudeUsage.xcodeproj         # ⌘R  (or: make build)
 ```
+</details>
 
-On first run, click **Always Allow** on the Keychain prompt. A gauge icon appears in the menu bar.
-Then open **Notification Center** → **Edit Widgets** → add **Claude Usage** (medium). Enable
-**Launch at login** from the menu-bar icon so the agent keeps the widget fresh after a reboot.
+### Verify the data layer without Xcode
+
+```bash
+make check        # or: swift run DataLayerCheck   → "ALL CHECKS PASSED"
+make live         # or: swift run DataLayerCheck --live   (Keychain → endpoint → parsed snapshot)
+bash scripts/fetch_usage.sh        # the same request in shell form
+```
 
 ## Repo layout
 
@@ -102,6 +125,7 @@ Then open **Notification Center** → **Edit Widgets** → add **Claude Usage** 
 | `ClaudeUsageWidget/` | The WidgetKit extension (TimelineProvider + small/medium views) |
 | `Tools/DataLayerCheck/` | Data-layer assertions that run with **no Xcode** |
 | `fixtures/` | Sample API responses for Pro / Max 5× / Max 20× / limits-only |
+| `scripts/install.sh` | One-command install (auto-detects Team ID, builds, installs, launches) |
 | `scripts/configure.sh` | Generates local entitlements + project with your Team ID |
 | `scripts/fetch_usage.sh` | The live request in shell form (handy for debugging) |
 | `project.yml` | XcodeGen spec → `ClaudeUsage.xcodeproj` |
@@ -110,10 +134,13 @@ Then open **Notification Center** → **Edit Widgets** → add **Claude Usage** 
 
 - The agent polls every 3 minutes (`UsageAgent.refreshInterval`), writes `usage.json`, and reloads
   the widget; WidgetKit also self-refreshes countdowns roughly every 15 minutes.
-- **Token handling (current):** read-only. The token lasts ~8h and is refreshed whenever you use
-  Claude Code, so it's normally fresh. If it expires, the widget shows a stale state until you open
-  Claude Code again — the app never writes to the Keychain. (Background auto-refresh is on the
-  roadmap.)
+- **Token auto-refresh (on by default).** As the ~8h OAuth token nears expiry, the agent refreshes
+  it via the refresh-token grant and writes the rotated tokens **back into the same Keychain blob**
+  (preserving every sibling key), so the widget stays fresh even when Claude Code has been idle and
+  Claude Code keeps working seamlessly. It first re-reads the Keychain in case Claude Code already
+  refreshed, and a failed refresh writes nothing and just falls back to the last snapshot. Toggle it
+  off from the menu-bar icon ("Refresh token automatically"). The client_id and token endpoint are
+  the same ones Claude Code itself uses.
 
 ## Security
 
@@ -123,8 +150,8 @@ and the unofficial-endpoint disclaimer are in **[SECURITY.md](SECURITY.md)**.
 
 ## Roadmap
 
-- Background token auto-refresh (keep the widget fresh when Claude Code is idle >8h).
 - `systemSmall` polish and optional multi-account support.
+- A signed, notarized release build so friends can install without Xcode.
 
 ## License
 

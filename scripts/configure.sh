@@ -9,9 +9,16 @@
 # Find TEAM_ID in Xcode ▸ Settings ▸ Accounts (or run: security find-certificate -c
 # "Apple Development" -p | openssl x509 -noout -subject  → the OU= field).
 set -euo pipefail
-
-TEAM="${1:?usage: configure.sh <TEAM_ID>}"
 cd "$(dirname "$0")/.."
+
+# Team ID: use the argument, else auto-detect from your Apple Development certificate.
+TEAM="${1:-}"
+if [ -z "$TEAM" ]; then
+  TEAM=$(security find-certificate -c "Apple Development" -p 2>/dev/null \
+        | openssl x509 -noout -subject -nameopt sep_multiline,utf8 2>/dev/null \
+        | awk -F= '/OU=/{gsub(/ /,"",$2); print $2; exit}')
+fi
+[ -n "$TEAM" ] || { echo "error: no Team ID (pass one, or sign in to Xcode ▸ Settings ▸ Accounts)" >&2; exit 1; }
 
 DIR="$HOME/Library/Application Support/ClaudeUsage"
 TEMPLATE="ClaudeUsageWidget/ClaudeUsageWidget.entitlements.template"

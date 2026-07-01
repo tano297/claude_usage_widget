@@ -36,6 +36,15 @@ if CommandLine.arguments.contains("--live") {
     exit(0)
 }
 
+// Keychain write-back safety self-test: proves the refresh write path preserves every sibling
+// key and does not change the token. Does NOT rotate anything.
+if CommandLine.arguments.contains("--writeback-test") {
+    let r = OAuthRefresher.selfTestWriteBackPreservesSiblings()
+    print("Keychain write-back self-test: \(r.ok ? "PASS" : "FAIL")")
+    print("  \(r.message)")
+    exit(r.ok ? 0 : 1)
+}
+
 let repoRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()  // DataLayerCheck
     .deletingLastPathComponent()  // Tools
