@@ -5,7 +5,9 @@ the claude.ai and Claude Code `/usage` panel does — session limit, weekly limi
 usage credits — for **any plan** (Pro, Max 5×, Max 20×, credit/overage).
 
 <p align="center">
-  <img src="docs/widget.png" alt="Claude Usage widget in macOS Notification Center" width="520">
+  <img src="docs/widget.png" alt="Claude Usage widget in Notification Center" width="350">
+  &nbsp;&nbsp;
+  <img src="docs/menu.png" alt="Claude Usage menu-bar popover" width="205">
 </p>
 
 <p align="center">
@@ -31,7 +33,7 @@ Install this macOS "Claude Usage" widget for me from this repo.
    If Xcode.app or the Xcode Apple-ID sign-in is missing, walk me through those (they are manual).
 4. Run `./scripts/install.sh` and show me any errors, fixing what you can.
 5. When it builds, tell me to click "Always Allow" on the Keychain prompt, then walk me through
-   adding the "Claude Usage" widget in Notification Center and enabling "Launch at login".
+   adding the "Claude Usage" widget in Notification Center (Launch at login turns on automatically).
 Explain each step briefly before running it, and never print my token.
 ```
 
@@ -44,13 +46,13 @@ Prefer to drive it yourself? Jump to [Manual install](#manual-install).
 - **Usage credits** — spent vs. monthly cap (and balance) when enabled.
 - **All plan types** — sections that don't apply to your plan are hidden automatically.
 - Color-coded by severity (blue → amber → red), matching the claude.ai panel.
-- A companion **menu-bar readout** with a refresh button and *Launch at login*.
+- **Tap-to-refresh (↻) on the widget**, plus a live **"Updated … ago"** freshness dot — so you always
+  know how current the reading is and can force an instant fetch.
+- A companion **menu-bar readout** with a refresh button and *Launch at login* (auto-enabled on first run).
+- Gentle on the API: auto-refreshes every 3 min, coalesces bursts to ≤1 request / 20 s, and backs off
+  on rate limits.
 - Runs entirely on your Mac. No server, no telemetry, token never leaves your machine except to
   Anthropic's own endpoint.
-
-| Notification Center | Xcode timeline preview |
-|---|---|
-| <img src="docs/widget.png" width="380"> | <img src="docs/timeline.png" width="380"> |
 
 ## How it works
 
@@ -94,8 +96,8 @@ Accounts) for a free Personal Team. Then, from the repo root:
 ```
 
 Then: click **Always Allow** on the first-run Keychain prompt → open **Notification Center** →
-**Edit Widgets** → add **Claude Usage** (medium) → and enable **Launch at login** from the
-menu-bar gauge icon so the agent keeps the widget fresh after a reboot.
+**Edit Widgets** → add **Claude Usage** (medium). **Launch at login is enabled automatically** on
+first run (toggle it from the menu-bar gauge icon), so the agent keeps the widget fresh after a reboot.
 
 <details>
 <summary>Prefer to run the steps yourself</summary>
