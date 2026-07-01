@@ -31,6 +31,13 @@ enum RawUsage {
             let currency: String?
             let decimal_places: Int?
         }
+        struct ModelScope: Decodable {
+            let id: String?
+            let display_name: String?
+        }
+        struct Scope: Decodable {
+            let model: ModelScope?
+        }
         struct LimitEntry: Decodable {
             let kind: String?
             let group: String?
@@ -38,6 +45,7 @@ enum RawUsage {
             let severity: String?
             let resets_at: String?
             let is_active: Bool?
+            let scope: Scope?
         }
 
         let five_hour: Window?
@@ -80,17 +88,42 @@ public enum UsageParser {
 
         let session = bar(window: raw.five_hour, kinds: ["session"])
         let weeklyAll = bar(window: raw.seven_day, kinds: ["weekly_all", "weekly"])
-        let weeklyOpus = bar(window: raw.seven_day_opus, kinds: ["weekly_opus", "opus"])
+        let weeklyScoped = scopedLimits(raw: raw)
         let credits = makeCredits(raw: raw, now: now)
 
         return UsageSnapshot(fetchedAt: fetchedAt,
                              planLabel: planLabel,
                              session: session,
                              weeklyAll: weeklyAll,
-                             weeklyOpus: weeklyOpus,
+                             weeklyScoped: weeklyScoped.isEmpty ? nil : weeklyScoped,
                              credits: credits,
                              stale: false,
                              error: nil)
+    }
+
+    /// Model-scoped weekly limits (Opus, Fable, …).
+    ///
+    /// The API now delivers these generically as `weekly_scoped` `limits[]` entries whose model
+    /// name lives in `scope.model.display_name` — this is what surfaces Fable. Older accounts (and
+    /// the fixtures) still use the dedicated `seven_day_opus` window / `weekly_opus` kind, so we
+    /// fold that legacy Opus limit into the same list when the generic path didn't already produce it.
+    static func scopedLimits(raw: RawUsage.Response) -> [ScopedLimit] {
+        var scoped: [ScopedLimit] = []
+        for e in raw.limits ?? [] where e.kind?.lowercased() == "weekly_scoped" {
+            guard let name = e.scope?.model?.display_name, !name.isEmpty, let p = e.percent else { continue }
+            let bar = LimitBar(percent: p, resetsAt: parseISODate(e.resets_at), severity: .from(percent: p, apiValue: e.severity))
+            scoped.append(ScopedLimit(name: name, bar: bar))
+        }
+        // Legacy dedicated Opus window/entry.
+        if !scoped.contains(where: { $0.name.caseInsensitiveCompare("Opus") == .orderedSame }) {
+            let match = raw.limits?.first { ["weekly_opus", "opus"].contains($0.kind?.lowercased() ?? "") }
+            if let w = raw.seven_day_opus, let u = w.utilization {
+                scoped.append(ScopedLimit(name: "Opus", bar: LimitBar(percent: u, resetsAt: parseISODate(w.resets_at) ?? parseISODate(match?.resets_at), severity: .from(percent: u, apiValue: match?.severity))))
+            } else if let match, let p = match.percent {
+                scoped.append(ScopedLimit(name: "Opus", bar: LimitBar(percent: p, resetsAt: parseISODate(match.resets_at), severity: .from(percent: p, apiValue: match.severity))))
+            }
+        }
+        return scoped
     }
 
     /// Prefer the richer `spend` block; fall back to `extra_usage`. Only surfaces when enabled.
@@ -261,7 +294,7 @@ public enum UsageClient {
         let usableProvided = (provided?.expiresSoon() ?? false) ? nil : provided
         guard let creds = usableProvided ?? readClaudeCredentials() else {
             let s = UsageSnapshot(fetchedAt: now, planLabel: "Claude",
-                                  session: nil, weeklyAll: nil, weeklyOpus: nil, credits: nil,
+                                  session: nil, weeklyAll: nil, weeklyScoped: nil, credits: nil,
                                   stale: true,
                                   error: "No Claude Code credentials found. Sign in with `claude`.")
             return (s, nil, nil)
@@ -301,7 +334,7 @@ public enum UsageClient {
             return last
         }
         return UsageSnapshot(fetchedAt: now, planLabel: label,
-                             session: nil, weeklyAll: nil, weeklyOpus: nil, credits: nil,
+                             session: nil, weeklyAll: nil, weeklyScoped: nil, credits: nil,
                              stale: true, error: error)
     }
 }

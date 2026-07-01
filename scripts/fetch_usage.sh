@@ -40,6 +40,8 @@ jq -r '
   def reset(w): if w == null then "—" else (w.resets_at // "—") end;
   "Session   : \(pct(.five_hour))  · resets \(reset(.five_hour))",
   "Weekly    : \(pct(.seven_day))  · resets \(reset(.seven_day))",
-  "Opus wk   : \(pct(.seven_day_opus))",
+  # Per-model weekly caps now arrive as `weekly_scoped` limits carrying the model display name.
+  (.limits // [] | map(select(.kind == "weekly_scoped")) | .[] |
+    "Weekly·\(.scope.model.display_name // "?") : \(.percent|floor)%"),
   "Credits   : \(if (.spend.enabled // false) then "\((.spend.used.amount_minor // 0)/100) / \((.spend.limit.amount_minor // 0)/100) \(.spend.limit.currency // "USD")" else "disabled" end)"
 ' <<<"$BODY"

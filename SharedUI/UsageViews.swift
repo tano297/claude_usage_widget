@@ -24,12 +24,15 @@ struct LimitRow: View {
     let bar: LimitBar
     let now: Date
     var compact: Bool = false
+    /// The widget hides the per-row countdown in its densest layouts to avoid clipping.
+    var showReset: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 2 : 3) {
             HStack(spacing: 4) {
                 Text(title)
                     .font(.system(size: compact ? 11 : 12, weight: .medium))
+                    .lineLimit(1)
                 Spacer(minLength: 4)
                 if bar.severity.showsWarningGlyph {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -43,7 +46,7 @@ struct LimitRow: View {
             }
             ProgressBarView(fraction: bar.percent / 100, color: bar.severity.color)
                 .frame(height: compact ? 5 : 6)
-            if let reset = bar.resetsAt {
+            if showReset, let reset = bar.resetsAt {
                 Text("resets in \(countdownString(to: reset, from: now))")
                     .font(.system(size: compact ? 9 : 10))
                     .foregroundStyle(.secondary)
@@ -77,12 +80,17 @@ struct UsageList: View {
     let snapshot: UsageSnapshot
     let now: Date
     var compact: Bool = false
+    /// Overrides for the widget's density-adaptive layout; the popover uses the defaults.
+    var spacing: CGFloat? = nil
+    var showResets: Bool = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: compact ? 7 : 10) {
-            if let s = snapshot.session { LimitRow(title: "Session", bar: s, now: now, compact: compact) }
-            if let w = snapshot.weeklyAll { LimitRow(title: "Weekly", bar: w, now: now, compact: compact) }
-            if let o = snapshot.weeklyOpus { LimitRow(title: "Weekly · Opus", bar: o, now: now, compact: compact) }
+        VStack(alignment: .leading, spacing: spacing ?? (compact ? 7 : 10)) {
+            if let s = snapshot.session { LimitRow(title: "Session", bar: s, now: now, compact: compact, showReset: showResets) }
+            if let w = snapshot.weeklyAll { LimitRow(title: "Weekly", bar: w, now: now, compact: compact, showReset: showResets) }
+            ForEach(snapshot.weeklyScoped ?? []) { scoped in
+                LimitRow(title: "Weekly · \(scoped.name)", bar: scoped.bar, now: now, compact: compact, showReset: showResets)
+            }
             if let c = snapshot.credits { CreditsRow(credits: c, now: now, compact: compact) }
         }
     }

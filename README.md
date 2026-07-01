@@ -1,8 +1,8 @@
 # Claude Usage Widget
 
 A native macOS **Notification Center / desktop widget** that shows your Claude usage the same way
-the claude.ai and Claude Code `/usage` panel does — session limit, weekly limit, weekly Opus, and
-usage credits — for **any plan** (Pro, Max 5×, Max 20×, credit/overage).
+the claude.ai and Claude Code `/usage` panel does — session limit, weekly limit, per-model weekly
+limits (Opus, Fable, …), and usage credits — for **any plan** (Pro, Max 5×, Max 20×, credit/overage).
 
 <p align="center">
   <img src="docs/widget.png" alt="Claude Usage widget in Notification Center" width="350">
@@ -41,8 +41,9 @@ Prefer to drive it yourself? Jump to [Manual install](#manual-install).
 
 ## Features
 
-- **Session** (5-hour), **Weekly** (all-models), and **Weekly · Opus** limits — utilization % with
-  live "resets in …" countdowns.
+- **Session** (5-hour), **Weekly** (all-models), and per-model **Weekly · <model>** limits (Opus,
+  Fable, …) — utilization % with live "resets in …" countdowns. Model-scoped rows appear for
+  whatever caps the API reports for your account, so new models show up on their own.
 - **Usage credits** — spent vs. monthly cap (and balance) when enabled.
 - **All plan types** — sections that don't apply to your plan are hidden automatically.
 - Color-coded by severity (blue → amber → red), matching the claude.ai panel.
