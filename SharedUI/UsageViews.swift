@@ -88,6 +88,27 @@ struct UsageList: View {
     }
 }
 
+/// "Updated 12 sec ago" (green) or "Stale · 9 min ago" (orange). Shared by the menu and widget.
+/// Uses `Text(date, style: .relative)`, which auto-ticks every second in both widgets and normal
+/// views — no timeline reloads needed, so the age never looks frozen or jumpy.
+struct FreshnessRow: View {
+    let snapshot: UsageSnapshot
+    var dotSize: CGFloat = 7
+    var font: Font = .caption2
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(snapshot.stale ? Color.orange : Color.green)
+                .frame(width: dotSize, height: dotSize)
+            (Text(snapshot.stale ? "Stale · " : "Updated ")
+             + Text(snapshot.fetchedAt, style: .relative))
+                .foregroundStyle(snapshot.stale ? Color.orange : Color.secondary)
+        }
+        .font(font)
+    }
+}
+
 /// A percentage ring for the small widget.
 struct UsageRing: View {
     let percent: Double

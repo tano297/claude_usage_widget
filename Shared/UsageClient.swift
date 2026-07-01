@@ -185,29 +185,40 @@ public func readClaudeCredentials() -> ClaudeCredentials? {
 public enum UsageClient {
     public static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
-    /// The `/usage` endpoint requires a `claude-code/<version>` User-Agent or it 429s.
+    /// The `/usage` endpoint expects a `claude-code/<version>` User-Agent — a missing/foreign UA
+    /// lands in an aggressively rate-limited bucket. GUI apps have a minimal PATH so `claude` often
+    /// isn't found; fall back to the installed version directory before the static default.
     static let cachedUserAgent: String = {
-        let fallback = "claude-code/2.1.0"
         #if os(macOS)
+        if let v = claudeVersionFromProcess() { return "claude-code/\(v)" }
+        if let v = claudeVersionFromInstallDir() { return "claude-code/\(v)" }
+        #endif
+        return "claude-code/2.1.0"
+    }()
+
+    #if os(macOS)
+    private static func claudeVersionFromProcess() -> String? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         proc.arguments = ["claude", "--version"]
-        let out = Pipe()
-        proc.standardOutput = out
-        proc.standardError = Pipe()
+        let out = Pipe(); proc.standardOutput = out; proc.standardError = Pipe()
         do {
-            try proc.run()
-            proc.waitUntilExit()
+            try proc.run(); proc.waitUntilExit()
             let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            if let r = text.range(of: #"\d+\.\d+\.\d+"#, options: .regularExpression) {
-                return "claude-code/\(text[r])"
-            }
+            if let r = text.range(of: #"\d+\.\d+\.\d+"#, options: .regularExpression) { return String(text[r]) }
         } catch {}
-        #endif
-        return fallback
-    }()
+        return nil
+    }
+    private static func claudeVersionFromInstallDir() -> String? {
+        guard let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir else { return nil }
+        let dir = URL(fileURLWithPath: String(cString: home)).appendingPathComponent(".local/share/claude/versions")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names.filter { $0.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil }
+                    .max { $0.compare($1, options: .numeric) == .orderedAscending }
+    }
+    #endif
 
-    private enum RequestResult { case success(Data); case http(Int); case failure(String) }
+    private enum RequestResult { case success(Data); case http(Int, retryAfter: TimeInterval?); case failure(String) }
 
     private static func performRequest(accessToken: String) async -> RequestResult {
         var req = URLRequest(url: endpoint)
@@ -220,7 +231,10 @@ public enum UsageClient {
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
             guard let http = resp as? HTTPURLResponse else { return .failure("Bad response from server.") }
-            guard http.statusCode == 200 else { return .http(http.statusCode) }
+            guard http.statusCode == 200 else {
+                let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap { TimeInterval($0) }
+                return .http(http.statusCode, retryAfter: retryAfter)
+            }
             return .success(data)
         } catch {
             return .failure(error.localizedDescription)
@@ -232,30 +246,36 @@ public enum UsageClient {
     /// refreshes, rewrites, or deletes the Keychain item. On any failure, reuses the last good
     /// snapshot marked stale.
     public static func fetchSnapshot(now: Date = Date(),
-                                     using provided: ClaudeCredentials? = nil) async -> (snapshot: UsageSnapshot, creds: ClaudeCredentials?) {
+                                     using provided: ClaudeCredentials? = nil) async -> (snapshot: UsageSnapshot, creds: ClaudeCredentials?, retryAfter: TimeInterval?) {
         guard let creds = provided ?? readClaudeCredentials() else {
             let s = UsageSnapshot(fetchedAt: now, planLabel: "Claude",
                                   session: nil, weeklyAll: nil, weeklyOpus: nil, credits: nil,
                                   stale: true,
                                   error: "No Claude Code credentials found. Sign in with `claude`.")
-            return (s, nil)
+            return (s, nil, nil)
         }
         let label = planLabel(rateLimitTier: creds.rateLimitTier, subscriptionType: creds.subscriptionType)
 
         let result = await performRequest(accessToken: creds.accessToken)
 
         let snapshot: UsageSnapshot
+        var retryAfter: TimeInterval?
         switch result {
         case .success(let data):
             snapshot = (try? UsageParser.parse(data, planLabel: label, now: now, fetchedAt: now))
                 ?? degraded(now: now, label: label, error: "Could not parse usage response.")
-        case .http(let code):
-            let msg = code == 401 ? "Token expired — open Claude Code to refresh." : "HTTP \(code)"
+        case .http(let code, let ra):
+            let msg: String
+            switch code {
+            case 401: msg = "Token expired — open Claude Code to refresh."
+            case 429: msg = "Rate limited by Anthropic — backing off."; retryAfter = ra ?? 90
+            default:  msg = "HTTP \(code)"
+            }
             snapshot = degraded(now: now, label: label, error: msg)
         case .failure(let msg):
             snapshot = degraded(now: now, label: label, error: msg)
         }
-        return (snapshot, creds)
+        return (snapshot, creds, retryAfter)
     }
 
     /// Last-known snapshot marked stale, or an empty stale snapshot if none exists.
