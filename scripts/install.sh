@@ -23,8 +23,9 @@ if ! command -v xcodegen >/dev/null 2>&1; then
   say "Installing XcodeGen…"; brew install xcodegen
 fi
 
-# 3) Claude Code login (warn only — the app still installs)
-security find-generic-password -s "Claude Code-credentials" -w >/dev/null 2>&1 \
+# 3) Claude Code login (warn only — the app still installs). Do not use `-w` here; reading the
+# secret just to test presence can trigger an unnecessary Keychain prompt from `/usr/bin/security`.
+security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 \
   || warn "No Claude Code credentials in Keychain yet. Sign in with 'claude' or the widget will show 'not signed in'."
 
 # 4) Team ID: arg, else auto-detect from your Apple Development certificate
