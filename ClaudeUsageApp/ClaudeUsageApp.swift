@@ -39,6 +39,12 @@ final class UsageAgent: ObservableObject {
     /// macOS access prompt). Read from the Keychain only at first launch and near token expiry.
     private var cachedCreds: ClaudeCredentials?
 
+    // Rate-limit protection: coalesce bursts (menu-open, widget button, timer) into at most one live
+    // fetch per `minFetchInterval`, and honor a 429 backoff so we never hammer the endpoint.
+    private var lastFetchAt = Date.distantPast
+    private var backoffUntil = Date.distantPast
+    private let minFetchInterval: TimeInterval = 20
+
     init() {
         snapshot = SharedStore.load()
         Task { await refresh() }
@@ -55,9 +61,18 @@ final class UsageAgent: ObservableObject {
 
     func refresh() async {
         guard !isRefreshing else { return }   // serialize: never run two refreshes at once
+        let now = Date()
+        // Skip the network when we're inside a 429 backoff or a request happened very recently;
+        // still repaint the widget so the age (and any last data) render.
+        if now < backoffUntil || now.timeIntervalSince(lastFetchAt) < minFetchInterval {
+            WidgetCenter.shared.reloadAllTimelines()
+            return
+        }
         isRefreshing = true
-        let (snap, creds) = await UsageClient.fetchSnapshot(using: cachedCreds)
+        lastFetchAt = now
+        let (snap, creds, retryAfter) = await UsageClient.fetchSnapshot(using: cachedCreds)
         cachedCreds = creds   // reuse next time; nil re-reads the Keychain (e.g. after "Token expired")
+        if let retryAfter { backoffUntil = Date().addingTimeInterval(max(retryAfter, 60)) }
         try? SharedStore.save(snap)
         snapshot = snap
         isRefreshing = false
