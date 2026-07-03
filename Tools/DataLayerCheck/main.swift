@@ -132,6 +132,82 @@ let next = firstOfNextMonth(after: now, calendar: utc)
 eq(utc.dateComponents([.month], from: next).month, 8, "credits reset -> August")
 eq(utc.dateComponents([.day], from: next).day, 1, "credits reset -> day 1")
 
+print("threshold planner (notify every 10% per window, every $10 of credits):")
+func snap(session: LimitBar? = nil, weekly: LimitBar? = nil, scoped: [ScopedLimit]? = nil,
+          credits: CreditsInfo? = nil, stale: Bool = false) -> UsageSnapshot {
+    UsageSnapshot(fetchedAt: now, planLabel: "Max (20x)", session: session, weeklyAll: weekly,
+                  weeklyScoped: scoped, credits: credits, stale: stale, error: nil)
+}
+func bar(_ percent: Double, resetsIn: TimeInterval = 3600) -> LimitBar {
+    LimitBar(percent: percent, resetsAt: now.addingTimeInterval(resetsIn), severity: .normal)
+}
+let inAnHour = now.addingTimeInterval(3600)
+
+let seeded = ThresholdPlanner.plan(snapshot: snap(session: bar(45), weekly: bar(23)), state: [:], now: now)
+check(seeded.alerts.isEmpty, "first sighting seeds silently (no first-run blast)")
+eq(seeded.state["session"]?.bucket, 4, "session seeded at bucket 4")
+eq(seeded.state["weekly"]?.bucket, 2, "weekly seeded at bucket 2")
+
+let crossed = ThresholdPlanner.plan(snapshot: snap(weekly: bar(34)),
+                                    state: ["weekly": ThresholdKeyState(bucket: 2, resetsAt: inAnHour)], now: now)
+eq(crossed.alerts.count, 1, "one crossing -> one alert")
+eq(crossed.alerts.first?.title, "Weekly at 30%", "crossing title")
+eq(crossed.alerts.first?.body, "resets in 1h 0m", "crossing body carries countdown")
+eq(crossed.state["weekly"]?.bucket, 3, "state advances to bucket 3")
+
+let jumped = ThresholdPlanner.plan(snapshot: snap(session: bar(47)),
+                                   state: ["session": ThresholdKeyState(bucket: 0, resetsAt: inAnHour)], now: now)
+eq(jumped.alerts.count, 1, "multi-bucket jump -> single alert")
+eq(jumped.alerts.first?.title, "Session at 40%", "jump announces only the highest threshold")
+
+let fableUp = ThresholdPlanner.plan(
+    snapshot: snap(scoped: [ScopedLimit(name: "Fable", bar: bar(82))]),
+    state: ["scoped:Fable": ThresholdKeyState(bucket: 7, resetsAt: inAnHour)], now: now)
+eq(fableUp.alerts.first?.title, "Weekly · Fable at 80%", "scoped windows notify under their model name")
+
+let maxed = ThresholdPlanner.plan(snapshot: snap(session: bar(100)),
+                                  state: ["session": ThresholdKeyState(bucket: 9, resetsAt: inAnHour)], now: now)
+eq(maxed.alerts.first?.title, "Session limit reached", "bucket 10 -> limit reached")
+
+let cycled = ThresholdPlanner.plan(
+    snapshot: snap(session: bar(12, resetsIn: 7 * 86_400)),
+    state: ["session": ThresholdKeyState(bucket: 9, resetsAt: inAnHour)], now: now)
+check(cycled.alerts.isEmpty, "resetsAt moved -> new cycle reseeds silently")
+eq(cycled.state["session"]?.bucket, 1, "new cycle stores the fresh bucket")
+
+let dropped = ThresholdPlanner.plan(snapshot: snap(weekly: bar(12)),
+                                    state: ["weekly": ThresholdKeyState(bucket: 9, resetsAt: inAnHour)], now: now)
+check(dropped.alerts.isEmpty, "bucket drop (reset fallback) reseeds silently")
+eq(dropped.state["weekly"]?.bucket, 1, "dropped state reseeded")
+
+// The UserDefaults round trip loses sub-second precision; that must not read as a new cycle.
+let fracReset = parseISODate("2026-07-01T20:30:00.577840+00:00")!
+let roundTripped = ThresholdPlanner.decodeState(
+    ThresholdPlanner.encodeState(["weekly": ThresholdKeyState(bucket: 2, resetsAt: fracReset)]))
+let afterRoundTrip = ThresholdPlanner.plan(
+    snapshot: snap(weekly: LimitBar(percent: 34, resetsAt: fracReset, severity: .normal)),
+    state: roundTripped, now: now)
+eq(afterRoundTrip.alerts.count, 1, "sub-second ISO round-trip loss doesn't fake a new cycle")
+check(ThresholdPlanner.decodeState(nil).isEmpty && ThresholdPlanner.decodeState("garbage").isEmpty,
+      "missing/corrupt stored state decodes to empty")
+
+let credits = CreditsInfo(usedMinor: 6100, limitMinor: 30000, balanceMinor: nil,
+                          currency: "USD", exponent: 2, resetsAt: now.addingTimeInterval(30 * 86_400))
+let creditsUp = ThresholdPlanner.plan(snapshot: snap(credits: credits),
+                                      state: ["credits": ThresholdKeyState(bucket: 4, resetsAt: credits.resetsAt)], now: now)
+eq(creditsUp.alerts.first?.title, "Credits: $60.00 spent", "$48.98 -> $61.00 announces the $60 step")
+eq(creditsUp.alerts.first?.body, "$300.00 limit · resets \(shortDateString(credits.resetsAt!))", "credits body carries cap + reset")
+eq(creditsUp.state["credits"]?.bucket, 6, "credits state advances to bucket 6")
+
+let staleState = ["session": ThresholdKeyState(bucket: 1, resetsAt: inAnHour)]
+let staleRun = ThresholdPlanner.plan(snapshot: snap(session: bar(99), stale: true), state: staleState, now: now)
+check(staleRun.alerts.isEmpty, "stale snapshot never alerts")
+eq(staleRun.state, staleState, "stale snapshot leaves state untouched")
+
+let pruned = ThresholdPlanner.plan(snapshot: snap(session: bar(10)),
+                                   state: ["scoped:Opus": ThresholdKeyState(bucket: 5, resetsAt: inAnHour)], now: now)
+check(pruned.state["scoped:Opus"] == nil, "departed windows pruned from state")
+
 print("credential expiry (drives Keychain re-read so a cached token can't get stuck):")
 let realNow = Date()
 let expiredCred = ClaudeCredentials(accessToken: "x", refreshToken: nil, expiresAt: realNow.addingTimeInterval(-60), rateLimitTier: nil, subscriptionType: nil)

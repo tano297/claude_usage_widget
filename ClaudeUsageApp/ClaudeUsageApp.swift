@@ -53,6 +53,7 @@ final class UsageAgent: ObservableObject {
             UserDefaults.standard.set(true, forKey: "didAutoEnableLoginItem")
             setLaunchAtLogin(true)
         }
+        if Self.notificationsEnabled { NotificationPoster.shared.prepare() }
         Task { await refresh() }
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { await self?.refresh() }
@@ -81,8 +82,29 @@ final class UsageAgent: ObservableObject {
         if let retryAfter { backoffUntil = Date().addingTimeInterval(max(retryAfter, 60)) }
         try? SharedStore.save(snap)
         snapshot = snap
+        notifyThresholds(for: snap)
         isRefreshing = false
         WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    // MARK: Threshold notifications
+
+    static let notificationsEnabledKey = "notificationsEnabled"
+    private let thresholdStateKey = "thresholdNotifyState"
+
+    /// Default ON — absence of the key means the user never opted out.
+    static var notificationsEnabled: Bool {
+        UserDefaults.standard.object(forKey: notificationsEnabledKey) == nil
+            || UserDefaults.standard.bool(forKey: notificationsEnabledKey)
+    }
+
+    /// Runs the planner on every fresh snapshot. State always advances — even while muted — so
+    /// re-enabling the toggle doesn't dump a backlog of crossings that happened silently.
+    private func notifyThresholds(for snap: UsageSnapshot) {
+        let stored = ThresholdPlanner.decodeState(UserDefaults.standard.string(forKey: thresholdStateKey))
+        let (alerts, newState) = ThresholdPlanner.plan(snapshot: snap, state: stored, now: Date())
+        UserDefaults.standard.set(ThresholdPlanner.encodeState(newState), forKey: thresholdStateKey)
+        if Self.notificationsEnabled { NotificationPoster.shared.post(alerts) }
     }
 
     /// All active limits, labeled, for the menu bar glyph (see `menuBarSummary`).
@@ -95,6 +117,8 @@ struct MenuContent: View {
     @ObservedObject var agent: UsageAgent
     @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
     @State private var loginItemNote: String?
+    @State private var notifyEnabled = UsageAgent.notificationsEnabled
+    @State private var notifyNote: String?
     // Ticks once a minute so the popover's countdowns stay live while open.
     @State private var now = Date()
     private let tick = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -149,6 +173,27 @@ struct MenuContent: View {
                 .buttonStyle(.plain)
             }
 
+            Toggle("Notify every 10% used / $10 spent", isOn: Binding(
+                get: { notifyEnabled },
+                set: { on in
+                    notifyEnabled = on
+                    UserDefaults.standard.set(on, forKey: UsageAgent.notificationsEnabledKey)
+                    if on { NotificationPoster.shared.prepare() }
+                    refreshNotifyNote()
+                }
+            ))
+            .toggleStyle(.checkbox)
+            .font(.caption)
+
+            if let notifyNote {
+                Button { openNotificationSettings() } label: {
+                    Label(notifyNote, systemImage: "exclamationmark.triangle")
+                        .font(.caption2).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .buttonStyle(.plain)
+            }
+
             Text("Runs in the background and updates every \(Int(agent.refreshInterval / 60)) min. Tap ↻ on the widget for an instant refresh.")
                 .font(.caption2).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -170,8 +215,24 @@ struct MenuContent: View {
         .onAppear {
             now = Date()
             launchAtLogin = (SMAppService.mainApp.status == .enabled)   // stay in sync with the system
+            refreshNotifyNote()
             Task { await agent.refresh() }   // force a fresh reading whenever you open the menu
         }
+    }
+
+    /// Surface a settings hint when the toggle is on but macOS-level permission is denied.
+    private func refreshNotifyNote() {
+        guard notifyEnabled else { notifyNote = nil; return }
+        Task {
+            notifyNote = await NotificationPoster.shared.authorizationDenied()
+                ? "Allow notifications for “Claude Usage” in System Settings ▸ Notifications." : nil
+        }
+    }
+}
+
+private func openNotificationSettings() {
+    if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+        NSWorkspace.shared.open(url)
     }
 }
 
