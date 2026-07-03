@@ -92,6 +92,15 @@ let wsOpus = ws.weeklyScoped?.first { $0.name == "Opus" }
 eq(wsOpus?.bar.percent, 88, "Opus 88%")
 eq(wsOpus?.bar.severity, .high, "Opus high")
 
+print("menu bar summary (all windows, labeled):")
+eq(menuBarSummary(ws), "S14 W3 F42 O88", "scoped fixture -> S14 W3 F42 O88")
+eq(menuBarSummary(m), "S0 W81", "max20x -> S0 W81 (no scoped)")
+eq(menuBarSummary(nil), "—", "nil snapshot -> em dash")
+eq(menuBarSummary(UsageSnapshot.noData(now: now)), "—", "noData (all-nil limits) -> em dash")
+var collision = ws
+collision.weeklyScoped = [ScopedLimit(name: "Sonnet", bar: LimitBar(percent: 45.6, resetsAt: nil, severity: .normal))]
+eq(menuBarSummary(collision), "S14 W3 So46", "label collision -> two letters; 45.6 rounds to 46")
+
 print("limits_only (typed windows absent -> fall back to limits[]):")
 let l = parse("limits_only")
 eq(l.session?.percent, 33, "session from limits 33%")

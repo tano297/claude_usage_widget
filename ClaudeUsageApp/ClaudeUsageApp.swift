@@ -16,7 +16,7 @@ struct ClaudeUsageApp: App {
         MenuBarExtra {
             MenuContent(agent: agent)
         } label: {
-            // Compact readout: the most-consumed active limit.
+            // Compact readout: every active limit, labeled ("S0 W27 F45").
             HStack(spacing: 3) {
                 Image(systemName: "gauge.medium")
                 Text(agent.menuBarText).monospacedDigit()
@@ -85,12 +85,9 @@ final class UsageAgent: ObservableObject {
         WidgetCenter.shared.reloadAllTimelines()
     }
 
-    /// Highest active utilization across the limits, for the menu bar glyph.
+    /// All active limits, labeled, for the menu bar glyph (see `menuBarSummary`).
     var menuBarText: String {
-        guard let s = snapshot else { return "—" }
-        let bars = [s.session, s.weeklyAll].compactMap { $0 } + (s.weeklyScoped ?? []).map(\.bar)
-        guard let top = bars.max(by: { $0.percent < $1.percent }) else { return "—" }
-        return percentString(top.percent)
+        menuBarSummary(snapshot)
     }
 }
 
