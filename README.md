@@ -46,7 +46,7 @@ Prefer to drive it yourself? Jump to [Manual install](#manual-install).
   whatever caps the API reports for your account, so new models show up on their own.
 - **Usage credits** — spent vs. monthly cap (and balance) when enabled.
 - **All plan types** — sections that don't apply to your plan are hidden automatically.
-- Color-coded by severity (blue → amber → red), matching the claude.ai panel.
+- Anthropic-clay identity color (`#D97757`) with warmer amber → orange → red severity escalation.
 - **Tap-to-refresh (↻) on the widget**, plus a live **"Updated … ago"** freshness dot — so you always
   know how current the reading is and can force an instant fetch.
 - A companion **menu-bar readout** with a refresh button and *Launch at login* (auto-enabled on first run).

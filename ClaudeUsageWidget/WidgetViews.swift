@@ -20,7 +20,7 @@ struct MediumUsageView: View {
         let s = entry.snapshot
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                Text("Claude").font(.system(size: 13, weight: .bold))
+                Text("Claude").font(.system(size: 13, weight: .bold)).foregroundStyle(ClaudeTheme.clay)
                 Text(s.planLabel).font(.system(size: 12)).foregroundStyle(.secondary)
                 Spacer()
                 Button(intent: RefreshUsageIntent()) {
@@ -78,7 +78,7 @@ struct SmallUsageView: View {
             HStack(spacing: 4) {
                 Text(s.planLabel)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ClaudeTheme.clay)
                 Spacer()
                 Button(intent: RefreshUsageIntent()) {
                     Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .semibold))

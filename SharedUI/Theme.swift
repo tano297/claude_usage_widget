@@ -1,14 +1,19 @@
 import SwiftUI
 
-// Colors mirror the claude.ai usage panel: blue when healthy, amber at warning (the 81% case
-// in the screenshot), escalating to red. Compiled into both the app and widget targets.
+enum ClaudeTheme {
+    /// Anthropic's official "clay" swatch (#D97757), used as the provider identity color.
+    static let clay = Color(red: 0.851, green: 0.467, blue: 0.341)
+}
+
+// Start with Anthropic clay for healthy usage, then move through stronger warm tones as a limit
+// approaches exhaustion. Compiled into both the app and widget targets.
 extension Severity {
     var color: Color {
         switch self {
-        case .normal:   return Color(red: 0.30, green: 0.55, blue: 0.98) // blue
-        case .warning:  return Color(red: 0.95, green: 0.68, blue: 0.22) // amber
-        case .high:     return Color(red: 0.95, green: 0.45, blue: 0.15) // orange
-        case .critical: return Color(red: 0.90, green: 0.26, blue: 0.24) // red
+        case .normal:   return ClaudeTheme.clay
+        case .warning:  return Color(red: 0.88, green: 0.54, blue: 0.24) // amber-orange
+        case .high:     return Color(red: 0.85, green: 0.36, blue: 0.17) // deep orange
+        case .critical: return Color(red: 0.78, green: 0.20, blue: 0.18) // warm red
         case .unknown:  return Color.gray
         }
     }

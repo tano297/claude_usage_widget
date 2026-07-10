@@ -127,7 +127,7 @@ struct MenuContent: View {
         VStack(alignment: .leading, spacing: 10) {
             if let s = agent.snapshot {
                 HStack(spacing: 6) {
-                    Text("Claude").font(.headline)
+                    Text("Claude").font(.headline).foregroundStyle(ClaudeTheme.clay)
                     Text(s.planLabel).font(.subheadline).foregroundStyle(.secondary)
                     Spacer()
                     if agent.isRefreshing {
@@ -256,4 +256,3 @@ func setLaunchAtLogin(_ enabled: Bool) -> String? {
         return "Couldn't update the login item — open Login Items settings."
     }
 }
-

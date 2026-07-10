@@ -151,23 +151,23 @@ eq(seeded.state["weekly"]?.bucket, 2, "weekly seeded at bucket 2")
 let crossed = ThresholdPlanner.plan(snapshot: snap(weekly: bar(34)),
                                     state: ["weekly": ThresholdKeyState(bucket: 2, resetsAt: inAnHour)], now: now)
 eq(crossed.alerts.count, 1, "one crossing -> one alert")
-eq(crossed.alerts.first?.title, "Weekly at 30%", "crossing title")
+eq(crossed.alerts.first?.title, "Claude · Weekly at 30%", "provider-prefixed crossing title")
 eq(crossed.alerts.first?.body, "resets in 1h 0m", "crossing body carries countdown")
 eq(crossed.state["weekly"]?.bucket, 3, "state advances to bucket 3")
 
 let jumped = ThresholdPlanner.plan(snapshot: snap(session: bar(47)),
                                    state: ["session": ThresholdKeyState(bucket: 0, resetsAt: inAnHour)], now: now)
 eq(jumped.alerts.count, 1, "multi-bucket jump -> single alert")
-eq(jumped.alerts.first?.title, "Session at 40%", "jump announces only the highest threshold")
+eq(jumped.alerts.first?.title, "Claude · Session at 40%", "jump announces provider and highest threshold")
 
 let fableUp = ThresholdPlanner.plan(
     snapshot: snap(scoped: [ScopedLimit(name: "Fable", bar: bar(82))]),
     state: ["scoped:Fable": ThresholdKeyState(bucket: 7, resetsAt: inAnHour)], now: now)
-eq(fableUp.alerts.first?.title, "Weekly · Fable at 80%", "scoped windows notify under their model name")
+eq(fableUp.alerts.first?.title, "Claude · Weekly · Fable at 80%", "scoped windows notify with provider and model")
 
 let maxed = ThresholdPlanner.plan(snapshot: snap(session: bar(100)),
                                   state: ["session": ThresholdKeyState(bucket: 9, resetsAt: inAnHour)], now: now)
-eq(maxed.alerts.first?.title, "Session limit reached", "bucket 10 -> limit reached")
+eq(maxed.alerts.first?.title, "Claude · Session limit reached", "bucket 10 -> provider-prefixed limit reached")
 
 let cycled = ThresholdPlanner.plan(
     snapshot: snap(session: bar(12, resetsIn: 7 * 86_400)),
@@ -195,7 +195,7 @@ let credits = CreditsInfo(usedMinor: 6100, limitMinor: 30000, balanceMinor: nil,
                           currency: "USD", exponent: 2, resetsAt: now.addingTimeInterval(30 * 86_400))
 let creditsUp = ThresholdPlanner.plan(snapshot: snap(credits: credits),
                                       state: ["credits": ThresholdKeyState(bucket: 4, resetsAt: credits.resetsAt)], now: now)
-eq(creditsUp.alerts.first?.title, "Credits: $60.00 spent", "$48.98 -> $61.00 announces the $60 step")
+eq(creditsUp.alerts.first?.title, "Claude · Credits: $60.00 spent", "$48.98 -> $61.00 announces provider and $60 step")
 eq(creditsUp.alerts.first?.body, "$300.00 limit · resets \(shortDateString(credits.resetsAt!))", "credits body carries cap + reset")
 eq(creditsUp.state["credits"]?.bucket, 6, "credits state advances to bucket 6")
 
