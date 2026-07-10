@@ -22,7 +22,7 @@ public struct ThresholdKeyState: Codable, Equatable, Sendable {
 
 public struct ThresholdAlert: Equatable, Sendable {
     public var key: String    // "session" | "weekly" | "scoped:<name>" | "credits"
-    public var title: String  // "Weekly · Fable at 80%" / "Session limit reached" / "Credits: $50.00 spent"
+    public var title: String  // "Claude · Weekly · Fable at 80%" / "Claude · Credits: $50.00 spent"
     public var body: String   // "resets in 5d 13h" / "$300.00 limit · resets Aug 1"; may be empty
     public var bucket: Int    // with `key`, forms a stable notification identifier
 }
@@ -68,7 +68,7 @@ public enum ThresholdPlanner {
             track(key: key, bucket: bucket, resetsAt: bar.resetsAt) { b in
                 ThresholdAlert(
                     key: key,
-                    title: b >= 10 ? "\(name) limit reached" : "\(name) at \(b * 10)%",
+                    title: "Claude · " + (b >= 10 ? "\(name) limit reached" : "\(name) at \(b * 10)%"),
                     body: bar.resetsAt.map { "resets in \(countdownString(to: $0, from: now))" } ?? "",
                     bucket: b)
             }
@@ -88,7 +88,7 @@ public enum ThresholdPlanner {
                 if let r = c.resetsAt { body += " · resets \(shortDateString(r))" }
                 return ThresholdAlert(
                     key: "credits",
-                    title: "Credits: \(moneyString(minor: b * stepMinor, exponent: c.exponent, currency: c.currency)) spent",
+                    title: "Claude · Credits: \(moneyString(minor: b * stepMinor, exponent: c.exponent, currency: c.currency)) spent",
                     body: body,
                     bucket: b)
             }
