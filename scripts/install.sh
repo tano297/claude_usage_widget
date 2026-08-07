@@ -23,10 +23,43 @@ if ! command -v xcodegen >/dev/null 2>&1; then
   say "Installing XcodeGen…"; brew install xcodegen
 fi
 
-# 3) Claude Code login (warn only — the app still installs). Do not use `-w` here; reading the
-# secret just to test presence can trigger an unnecessary Keychain prompt from `/usr/bin/security`.
-security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 \
-  || warn "No Claude Code credentials in Keychain yet. Sign in with 'claude' or the widget will show 'not signed in'."
+# 3) Claude Code CLI (warn only — the app still installs). Match the app's discovery order so a
+# GUI launch and this installer agree even when the user's shell PATH is unavailable.
+find_claude() {
+  local candidate directory
+  if [ -n "${CLAUDE_BIN:-}" ] && [ -x "$CLAUDE_BIN" ]; then
+    printf '%s\n' "$CLAUDE_BIN"
+    return 0
+  fi
+  for candidate in \
+    "$HOME/.local/bin/claude" \
+    "$HOME/.npm-global/bin/claude" \
+    "$HOME/.bun/bin/claude" \
+    "$HOME/.volta/bin/claude" \
+    "/opt/homebrew/bin/claude" \
+    "/usr/local/bin/claude"; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  while IFS= read -r directory; do
+    [ -n "$directory" ] || continue
+    candidate="$directory/claude"
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(printf '%s' "${PATH:-}" | tr ':' '\n')
+  return 1
+}
+
+CLAUDE_PATH="$(find_claude || true)"
+if [ -n "$CLAUDE_PATH" ]; then
+  say "Claude Code CLI: $CLAUDE_PATH"
+else
+  warn "Claude Code CLI not found. Install Claude Code and sign in with 'claude' before using the widget."
+fi
 
 # 4) Team ID: arg, else auto-detect from your Apple Development certificate
 TEAM="${1:-}"
@@ -70,8 +103,8 @@ open /Applications/ClaudeUsage.app
 cat <<'EOF'
 
 ✓ Installed.  Finish up:
-  1. Click "Always Allow" on the Keychain prompt (first run only).
+  1. No Keychain access is needed; Claude Code handles its own authentication.
   2. Open Notification Center (swipe left from the right edge, or click the clock)
      → scroll down → Edit Widgets → add "Claude Usage" (Medium).
-  3. Click the menu-bar gauge icon → enable "Launch at login".
+  3. Launch at login is enabled automatically on first run and can be changed from the menu bar.
 EOF

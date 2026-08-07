@@ -1,0 +1,10 @@
+[
+  {
+    "type": "assistant",
+    "message": {
+      "content": [
+        {"type": "text", "text": "Fixture assistant message"}
+      ]
+    }
+  }
+]

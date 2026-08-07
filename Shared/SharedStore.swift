@@ -1,12 +1,8 @@
 import Foundation
 
-/// Shared snapshot store. The non-sandboxed agent writes `usage.json` under the user's real
-/// Application Support directory; the sandboxed widget reads that same absolute path through a
-/// read-only *temporary-exception* sandbox entitlement (see ClaudeUsageWidget.entitlements).
-///
-/// This deliberately avoids App Groups, which on macOS now require registering the group id on
-/// the Apple Developer portal — i.e. a *paid* membership. A read-only path exception is honored
-/// by local development signing, so a **free personal team** is enough.
+/// The agent writes one minimal JSON snapshot; the sandboxed widget has read-only access to this
+/// one Application Support directory. App Groups are avoided so local signing works with a free
+/// Apple developer team.
 public enum SharedStore {
     static let subdir = "ClaudeUsage"
     static let filename = "usage.json"
@@ -40,9 +36,14 @@ public enum SharedStore {
 
     /// Called by the agent only (the widget's sandbox exception is read-only).
     public static func save(_ snapshot: UsageSnapshot) throws {
-        try FileManager.default.createDirectory(at: directory(), withIntermediateDirectories: true)
+        let manager = FileManager.default
+        try manager.createDirectory(at: directory(),
+                                    withIntermediateDirectories: true,
+                                    attributes: [.posixPermissions: 0o700])
+        try? manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory().path)
         let data = try makeEncoder().encode(snapshot)
         try data.write(to: fileURL, options: .atomic)
+        try? manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     }
 
     public static func load() -> UsageSnapshot? {

@@ -1,47 +1,91 @@
 #!/bin/bash
-# Fetch live Claude usage using the Claude Code OAuth token from the macOS Keychain.
-# This is the exact call the widget's agent makes, in shell form — handy for validating the
-# data layer without building the app. Prints a compact summary plus the raw JSON with --raw.
+# Exercise the same two Claude CLI calls as the app and print only the auth fields and usage-bar
+# lines the snapshot parser is allowed to consume. The analytics section is intentionally dropped.
 set -euo pipefail
 
-RAW=0
-[[ "${1:-}" == "--raw" ]] && RAW=1
+find_claude() {
+  local candidate directory
+  if [ -n "${CLAUDE_BIN:-}" ] && [ -x "$CLAUDE_BIN" ]; then
+    printf '%s\n' "$CLAUDE_BIN"
+    return 0
+  fi
+  for candidate in \
+    "$HOME/.local/bin/claude" \
+    "$HOME/.npm-global/bin/claude" \
+    "$HOME/.bun/bin/claude" \
+    "$HOME/.volta/bin/claude" \
+    "/opt/homebrew/bin/claude" \
+    "/usr/local/bin/claude"; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  while IFS= read -r directory; do
+    [ -n "$directory" ] || continue
+    candidate="$directory/claude"
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(printf '%s' "${PATH:-}" | tr ':' '\n')
+  return 1
+}
 
-CREDS="$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || true)"
-if [[ -z "$CREDS" ]]; then
-  echo "error: no 'Claude Code-credentials' item in Keychain. Sign in with: claude" >&2
+# macOS has no built-in `timeout`; Perl's alarm gives each plain subprocess call the same bounded
+# watchdog behavior without adding a package dependency.
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  /usr/bin/perl -e '$seconds = shift @ARGV; alarm $seconds; exec @ARGV or exit 127' "$seconds" "$@"
+}
+
+CLAUDE="$(find_claude)" || {
+  echo "error: Claude Code CLI not found. Install Claude Code, then retry." >&2
   exit 1
+}
+
+AUTH_JSON=""
+set +e
+AUTH_JSON="$(run_with_timeout 10 "$CLAUDE" auth status --json </dev/null 2>/dev/null)"
+AUTH_EXIT=$?
+set -e
+if [ "$AUTH_EXIT" -ne 142 ] && \
+   jq -e 'type == "object" and has("loggedIn")' >/dev/null 2>&1 <<<"$AUTH_JSON"; then
+  if jq -e '.loggedIn == false' >/dev/null 2>&1 <<<"$AUTH_JSON"; then
+    echo 'error: sign in with `claude`, then retry.' >&2
+    exit 1
+  fi
+  EMAIL="$(jq -r 'select(.loggedIn == true) | .email // empty' <<<"$AUTH_JSON")"
+  PLAN="$(jq -r 'select(.loggedIn == true) | .subscriptionType // empty' <<<"$AUTH_JSON")"
+  [ -z "$EMAIL" ] || printf 'Account    : %s\n' "$EMAIL"
+  [ -z "$PLAN" ] || printf 'Plan       : %s\n' "$PLAN"
 fi
 
-TOKEN="$(jq -r '.claudeAiOauth.accessToken' <<<"$CREDS")"
-TIER="$(jq -r '.claudeAiOauth.rateLimitTier // "unknown"' <<<"$CREDS")"
-VER="$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
-UA="claude-code/${VER:-2.1.0}"
-
-# Pass the bearer token via curl's --config (read from stdin), NOT as a -H argument, so the secret
-# never appears in this process's argv (which any local process could read via `ps`).
-BODY="$(curl -sS https://api.anthropic.com/api/oauth/usage \
-  -H "User-Agent: ${UA}" \
-  -H "anthropic-beta: oauth-2025-04-20" \
-  -H "Content-Type: application/json" \
-  --config - <<CURLCFG
-header = "Authorization: Bearer ${TOKEN}"
-CURLCFG
-)"
-
-if [[ "$RAW" == "1" ]]; then
-  echo "$BODY" | jq .
-  exit 0
+set +e
+USAGE_JSON="$(run_with_timeout 30 "$CLAUDE" -p /usage --output-format json \
+    --strict-mcp-config --no-session-persistence </dev/null 2>/dev/null)"
+USAGE_EXIT=$?
+set -e
+if [ "$USAGE_EXIT" -eq 142 ] || [ -z "$USAGE_JSON" ]; then
+    echo "error: Claude could not return usage before the timeout." >&2
+    exit 1
 fi
 
-echo "Plan tier : ${TIER}"
-jq -r '
-  def pct(w): if w == null or w.utilization == null then "—" else "\(w.utilization|floor)%" end;
-  def reset(w): if w == null then "—" else (w.resets_at // "—") end;
-  "Session   : \(pct(.five_hour))  · resets \(reset(.five_hour))",
-  "Weekly    : \(pct(.seven_day))  · resets \(reset(.seven_day))",
-  # Per-model weekly caps now arrive as `weekly_scoped` limits carrying the model display name.
-  (.limits // [] | map(select(.kind == "weekly_scoped")) | .[] |
-    "Weekly·\(.scope.model.display_name // "?") : \(.percent|floor)%"),
-  "Credits   : \(if (.spend.enabled // false) then "\((.spend.used.amount_minor // 0)/100) / \((.spend.limit.amount_minor // 0)/100) \(.spend.limit.currency // "USD")" else "disabled" end)"
-' <<<"$BODY"
+PROSE="$(jq -er '
+  map(select(.type == "result"))[0]
+  | select(.is_error == false and .subtype == "success")
+  | .result
+' <<<"$USAGE_JSON")" || {
+  echo "error: Claude returned no successful usage result." >&2
+  exit 1
+}
+
+LINES="$(grep -E \
+  '^Current session: [0-9]+% used( (·|-) resets .+)?$|^Current week \(all models\): [0-9]+% used( (·|-) resets .+)?$|^Current week \(.+\): [0-9]+% used( (·|-) resets .+)?$' \
+  <<<"$PROSE" || true)"
+[ -n "$LINES" ] || {
+  echo "error: Claude returned no recognized usage bars." >&2
+  exit 1
+}
+printf '%s\n' "$LINES"

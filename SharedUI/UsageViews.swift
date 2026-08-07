@@ -2,6 +2,23 @@ import SwiftUI
 
 // Reusable pieces shared by the menu bar popover and the Notification Center widget.
 
+/// Account email shown only on surfaces with enough horizontal room. Long addresses preserve both
+/// the local-part prefix and domain through middle truncation.
+struct AccountEmailLine: View {
+    let email: String?
+    var font: Font = .caption
+
+    var body: some View {
+        if let email, !email.isEmpty {
+            Text(email)
+                .font(font)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+}
+
 /// A rounded track + fill progress bar.
 struct ProgressBarView: View {
     let fraction: Double

@@ -1,0 +1,8 @@
+[
+  {
+    "type": "result",
+    "subtype": "error",
+    "is_error": true,
+    "result": "Fixture authentication failure details that must never be surfaced"
+  }
+]
