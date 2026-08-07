@@ -177,6 +177,23 @@ public enum UsageClient {
     static let authTimeout: TimeInterval = 10
     static let usageTimeout: TimeInterval = 30
 
+    /// The supplemental credits request uses the same Claude binary discovery and minimal child
+    /// environment as the primary CLI pipeline. Resolve its version at most once per process; raw
+    /// version output is never surfaced if the command is unavailable or malformed.
+    private static let cachedCreditsUserAgent: String = {
+        guard let data = try? runClaude(arguments: ["--version"], timeout: authTimeout),
+              let output = String(data: data, encoding: .utf8),
+              let match = output.range(of: #"[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?"#,
+                                       options: .regularExpression) else {
+            return "claude-code/2.1.224"
+        }
+        return "claude-code/\(output[match])"
+    }()
+
+    static func creditsUserAgent() -> String {
+        cachedCreditsUserAgent
+    }
+
     /// Fetch auth metadata and usage through Claude Code. On failure, retain the previous values
     /// and mark them stale; first-run failures return an explicit no-data snapshot.
     public static func fetchSnapshot(previous: UsageSnapshot? = nil) async -> UsageSnapshot {
@@ -269,6 +286,11 @@ public enum UsageClient {
         timer.schedule(deadline: .now() + timeout)
         timer.setEventHandler {
             if process.isRunning { process.terminate() }
+            // SIGTERM can be ignored; SIGKILL from the timer fires even while the caller is still
+            // blocked reading the pipe, so a wedged child cannot stall the refresh loop.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) {
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
         }
         timer.resume()
 
@@ -276,7 +298,13 @@ public enum UsageClient {
             timer.cancel()
             try? input.fileHandleForWriting.close()
             try? output.fileHandleForReading.close()
-            if process.isRunning { process.terminate() }
+            if process.isRunning {
+                process.terminate()
+                // Today's binary exits on SIGTERM; escalate anyway so a child that ignores it can
+                // never wedge the caller in `waitUntilExit()`.
+                Thread.sleep(forTimeInterval: 1)
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
             process.waitUntilExit()
         }
 

@@ -45,15 +45,22 @@ public func percentString(_ p: Double) -> String {
     "\(Int(p.rounded()))%"
 }
 
-/// Format minor currency units (e.g. 30000, exp 2, USD) as "$300.00".
-public func moneyString(minor: Int, exponent: Int, currency: String) -> String {
+/// Format minor currency units (e.g. 30000, exp 2, USD) as "$300.00". The UI formats in the user's
+/// locale; `locale` is explicit only so checks can assert a fixed string.
+public func moneyString(minor: Int,
+                        exponent: Int,
+                        currency: String,
+                        locale: Locale = .current) -> String {
     let value = Double(minor) / pow(10.0, Double(exponent))
     let fmt = NumberFormatter()
     fmt.numberStyle = .currency
+    fmt.locale = locale
     fmt.currencyCode = currency
-    fmt.minimumFractionDigits = min(2, exponent)
-    fmt.maximumFractionDigits = max(2, exponent)
-    return fmt.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
+    let fractionDigits = max(0, exponent)
+    fmt.minimumFractionDigits = fractionDigits
+    fmt.maximumFractionDigits = fractionDigits
+    return fmt.string(from: NSNumber(value: value))
+        ?? String(format: "%.*f", fractionDigits, value)
 }
 
 // MARK: - Reset dates

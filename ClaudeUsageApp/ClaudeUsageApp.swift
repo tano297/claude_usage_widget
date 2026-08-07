@@ -13,7 +13,7 @@ struct ClaudeUsageApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContent(agent: agent)
+            MenuContent(agent: agent, creditsGate: agent.creditsGate)
         } label: {
             // Compact readout: every active limit, labeled ("S0 W27 F45").
             HStack(spacing: 3) {
@@ -29,6 +29,7 @@ struct ClaudeUsageApp: App {
 final class UsageAgent: ObservableObject {
     @Published private(set) var snapshot: UsageSnapshot?
     @Published private(set) var isRefreshing = false
+    let creditsGate = UserDefaultsCreditsFetchGate()
 
     /// Fixed cadence. WidgetKit also self-refreshes countdowns between writes.
     let refreshInterval: TimeInterval = 180
@@ -70,7 +71,12 @@ final class UsageAgent: ObservableObject {
         }
         isRefreshing = true
         lastFetchAt = now
-        let snap = await UsageClient.fetchSnapshot(previous: snapshot)
+        var snap = await UsageClient.fetchSnapshot(previous: snapshot)
+        // Credits are supplemental. Only a fresh primary snapshot gets merged, and a miss never
+        // changes the CLI pipeline's freshness or fixed error state.
+        if !snap.stale {
+            snap.credits = await CreditsClient.fetchCredits(gate: creditsGate)
+        }
         try? SharedStore.save(snap)
         snapshot = snap
         notifyThresholds(for: snap)
@@ -102,10 +108,61 @@ final class UsageAgent: ObservableObject {
     var menuBarText: String {
         menuBarSummary(snapshot)
     }
+
+    func setCreditsEnabled(_ enabled: Bool) {
+        creditsGate.setEnabled(enabled)
+        if enabled {
+            // A deliberate re-enable clears the breaker and should get one immediate credits retry.
+            lastFetchAt = .distantPast
+            Task { await refresh() }
+        } else if var current = snapshot {
+            current.credits = nil
+            try? SharedStore.save(current)
+            snapshot = current
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
+}
+
+/// User preference and breaker persistence for the shared credits client. Absence of the disabled
+/// key means opt-in; an auto-disable additionally carries one fixed, non-sensitive reason.
+@MainActor
+final class UserDefaultsCreditsFetchGate: ObservableObject, CreditsFetchGate {
+    private static let disabledKey = "creditsFetchDisabled"
+    private static let reasonKey = "creditsFetchDisabledReason"
+
+    @Published private(set) var isEnabled: Bool
+    @Published private(set) var disableReason: CreditsDisableReason?
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let disabled = defaults.bool(forKey: Self.disabledKey)
+        isEnabled = !disabled
+        disableReason = disabled
+            ? defaults.string(forKey: Self.reasonKey).flatMap(CreditsDisableReason.init(rawValue:))
+            : nil
+    }
+
+    private let defaults: UserDefaults
+
+    func setEnabled(_ enabled: Bool) {
+        isEnabled = enabled
+        disableReason = nil
+        defaults.set(!enabled, forKey: Self.disabledKey)
+        defaults.removeObject(forKey: Self.reasonKey)
+    }
+
+    func disable(reason: CreditsDisableReason) {
+        isEnabled = false
+        disableReason = reason
+        defaults.set(true, forKey: Self.disabledKey)
+        defaults.set(reason.rawValue, forKey: Self.reasonKey)
+    }
 }
 
 struct MenuContent: View {
     @ObservedObject var agent: UsageAgent
+    @ObservedObject var creditsGate: UserDefaultsCreditsFetchGate
     @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
     @State private var loginItemNote: String?
     @State private var notifyEnabled = UsageAgent.notificationsEnabled
@@ -186,6 +243,21 @@ struct MenuContent: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .buttonStyle(.plain)
+            }
+
+            Toggle("Show usage credits", isOn: Binding(
+                get: { creditsGate.isEnabled },
+                set: { agent.setCreditsEnabled($0) }
+            ))
+            .toggleStyle(.checkbox)
+            .font(.caption)
+
+            if let reason = creditsGate.disableReason {
+                Text("Disabled — \(reason.rawValue)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help("Turn Show usage credits back on to retry.")
             }
 
             Text("Runs in the background and updates every \(Int(agent.refreshInterval / 60)) min. Tap ↻ on the widget for an instant refresh.")

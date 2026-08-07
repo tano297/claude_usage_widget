@@ -72,7 +72,12 @@ public struct CreditsInfo: Codable, Sendable, Equatable {
     public var exponent: Int
     public var resetsAt: Date?
 
-    public init(usedMinor: Int, limitMinor: Int, balanceMinor: Int?, currency: String, exponent: Int, resetsAt: Date?) {
+    public init(usedMinor: Int,
+                limitMinor: Int,
+                balanceMinor: Int? = nil,
+                currency: String,
+                exponent: Int,
+                resetsAt: Date? = nil) {
         self.usedMinor = usedMinor
         self.limitMinor = limitMinor
         self.balanceMinor = balanceMinor

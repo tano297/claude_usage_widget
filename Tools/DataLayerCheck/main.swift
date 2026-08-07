@@ -17,11 +17,28 @@ func eq<T: Equatable>(_ actual: T?, _ expected: T, _ message: String, line: UInt
           line: line)
 }
 
-// Live mode exercises the same two-subprocess pipeline as the menu-bar agent.
+@MainActor
+final class EphemeralCreditsGate: CreditsFetchGate {
+    var isEnabled = true
+    private(set) var disableReason: CreditsDisableReason?
+
+    func disable(reason: CreditsDisableReason) {
+        isEnabled = false
+        disableReason = reason
+    }
+}
+
+// Live mode exercises the CLI pipeline plus the isolated best-effort credits supplement.
 if CommandLine.arguments.contains("--live") {
-    let semaphore = DispatchSemaphore(value: 0)
-    Task {
-        let snapshot = await UsageClient.fetchSnapshot()
+    Task { @MainActor in
+        var snapshot = await UsageClient.fetchSnapshot()
+        let creditsGate = EphemeralCreditsGate()
+        // Exercise the supplement independently for diagnostics even when this shell cannot access
+        // Claude's primary login. Production still merges credits only after a fresh CLI fetch.
+        let liveCredits = await CreditsClient.fetchCredits(gate: creditsGate)
+        if !snapshot.stale {
+            snapshot.credits = liveCredits
+        }
         print("LIVE snapshot — plan: \(snapshot.planLabel)\(snapshot.stale ? "  [STALE]" : "")")
         if let email = snapshot.email { print("  account: \(email)") }
         if let error = snapshot.error { print("  error: \(error)") }
@@ -33,10 +50,22 @@ if CommandLine.arguments.contains("--live") {
         line("Session", snapshot.session)
         line("Weekly", snapshot.weeklyAll)
         for scoped in snapshot.weeklyScoped ?? [] { line("Weekly·\(scoped.name)", scoped.bar) }
-        semaphore.signal()
+        if let credits = liveCredits {
+            let used = moneyString(minor: credits.usedMinor,
+                                   exponent: credits.exponent,
+                                   currency: credits.currency)
+            let limit = moneyString(minor: credits.limitMinor,
+                                    exponent: credits.exponent,
+                                    currency: credits.currency)
+            print("  Credits    \(used) / \(limit)")
+        } else if let reason = creditsGate.disableReason {
+            print("  Credits    disabled — \(reason.rawValue)")
+        } else if !snapshot.stale {
+            print("  Credits    unavailable this cycle (breaker remains enabled)")
+        }
+        exit(0)
     }
-    semaphore.wait()
-    exit(0)
+    RunLoop.main.run()
 }
 
 let repoRoot = URL(fileURLWithPath: #filePath)
@@ -134,6 +163,76 @@ for forbidden in ["FixtureSkillAlpha", "FixtureSubagentBeta", "FixturePluginGamm
     check(!analyticsJSON.contains(forbidden), "analytics string discarded: \(forbidden)")
 }
 
+print("supplemental credits spend allowlist:")
+let enabledSpend = try! CreditsParser.parseSpend(fixture("credits_enabled"))
+eq(enabledSpend.usedMinor, 1234, "enabled used amount")
+eq(enabledSpend.limitMinor, 9876, "enabled limit amount")
+eq(enabledSpend.currency, "USD", "enabled currency")
+eq(enabledSpend.exponent, 2, "enabled exponent")
+eq(enabledSpend.percent, 12.5, "enabled percent")
+eq(enabledSpend.severity, "warning", "enabled severity")
+check(enabledSpend.enabled, "enabled flag")
+
+let disabledSpend = try! CreditsParser.parseSpend(fixture("credits_disabled"))
+check(!disabledSpend.enabled, "disabled flag")
+let nonUSDSpend = try! CreditsParser.parseSpend(fixture("credits_non_usd"))
+eq(nonUSDSpend.currency, "KWD", "non-USD currency")
+eq(nonUSDSpend.exponent, 3, "non-USD exponent 3")
+
+let showDecision = CreditsOutcomeMapper.decision(for: .response(enabledSpend))
+guard case .show(let decodedCredits) = showDecision else {
+    check(false, "enabled spend maps to visible credits")
+    fatalError("fixture decision should show credits")
+}
+eq(decodedCredits.usedMinor, 1234, "enabled spend maps used amount")
+eq(decodedCredits.limitMinor, 9876, "enabled spend maps limit amount")
+
+// Drive the real credential parser with a fixture blob, then build the snapshot the production way,
+// so the containment assertion below is about a token that actually travelled the pipeline.
+let credentialBlob = Data(#"{"claudeAiOauth":{"accessToken":"fixture_access_token_never_persist","refreshToken":"fixture_refresh_token_never_persist","expiresAt":4102444800000,"scopes":["user:inference"],"subscriptionType":"max"}}"#.utf8)
+let parsedToken = try! CreditsParser.parseAccessToken(credentialBlob)
+eq(parsedToken, "fixture_access_token_never_persist", "credential blob yields only the access token")
+var creditsSnapshot = normal
+creditsSnapshot.credits = decodedCredits
+let creditsJSON = String(data: try! encoder.encode(creditsSnapshot), encoding: .utf8)!
+for forbidden in ["fixture_junk_key", "amber_ladder", "display_hint",
+                  parsedToken, "fixture_refresh_token_never_persist"] {
+    check(!creditsJSON.contains(forbidden), "credits input discarded from snapshot: \(forbidden)")
+}
+
+print("credits outcome mapping + breaker table:")
+let outcomeCases: [(CreditsFetchEvent, CreditsFetchDecision, String)] = [
+    (.response(enabledSpend), .show(decodedCredits), "enabled success -> show / no breaker"),
+    (.response(disabledSpend), .hide, "disabled success -> hide / no breaker"),
+    (.httpStatus(401), .hide, "HTTP 401 -> hide / no breaker"),
+    (.httpStatus(429), .hide, "HTTP 429 -> hide / no breaker"),
+    (.httpStatus(500), .hide, "HTTP 500 -> hide / no breaker"),
+    (.httpStatus(503), .hide, "HTTP 503 -> hide / no breaker"),
+    (.httpStatus(403), .disable(.forbidden), "HTTP 403 -> breaker"),
+    (.credentialFailure(.launchFailed), .disable(.keychainAccess), "security launch failure -> breaker"),
+    (.credentialFailure(.nonzeroExit), .disable(.keychainAccess), "security nonzero -> breaker"),
+    (.credentialFailure(.emptyOutput), .disable(.keychainAccess), "security empty -> breaker"),
+    (.credentialFailure(.malformedOutput), .disable(.keychainAccess), "security malformed -> breaker"),
+    (.credentialFailure(.timedOut), .disable(.keychainAccess), "security timeout -> breaker"),
+    (.credentialFailure(.promptSuspected), .disable(.keychainAccess),
+     "prompt-tainted security success -> hide + breaker"),
+    (.transportFailure, .hide, "network failure -> hide / no breaker"),
+    (.malformedResponse, .hide, "malformed endpoint response -> hide / no breaker"),
+    (.httpStatus(400), .hide, "other HTTP status -> hide / no breaker"),
+]
+for (event, expected, message) in outcomeCases {
+    eq(CreditsOutcomeMapper.decision(for: event), expected, message)
+}
+
+print("prompt-tainted credential read (hardened Keychain ACL):")
+check(CreditsClient.promptTaint(elapsed: 0.01) == nil, "a promptless ~10ms read stays trusted")
+eq(CreditsClient.promptTaint(elapsed: 2.5), .promptSuspected,
+   "a success slower than a second means a dialog was answered")
+eq(CreditsOutcomeMapper.decision(for: .credentialFailure(.promptSuspected)),
+   .disable(.keychainAccess), "slow success -> hide + breaker trip")
+eq(CreditsOutcomeMapper.decision(for: .response(enabledSpend)),
+   .show(decodedCredits), "fast success -> show + no breaker trip")
+
 print("auth status allowlist + email propagation:")
 let auth = try! UsageParser.parseAuthStatus(fixture("auth_status"))
 check(auth.loggedIn, "loggedIn decoded")
@@ -187,6 +286,14 @@ let preEmailJSON = Data(#"{"fetchedAt":"2026-08-07T18:00:00Z","planLabel":"Pro",
 let preEmail = try! decoder.decode(UsageSnapshot.self, from: preEmailJSON)
 check(preEmail.email == nil, "snapshot without email decodes with nil")
 check(preEmail.weeklyScoped == nil, "older snapshot without weeklyScoped still decodes")
+let withoutCreditsJSON = Data(#"{"fetchedAt":"2026-08-07T18:00:00Z","planLabel":"Pro","session":null,"weeklyAll":null,"weeklyScoped":null,"stale":false,"error":null}"#.utf8)
+let withoutCredits = try! decoder.decode(UsageSnapshot.self, from: withoutCreditsJSON)
+check(withoutCredits.credits == nil, "snapshot without credits key decodes with nil")
+let historicalCreditsJSON = Data(#"{"fetchedAt":"2026-08-07T18:00:00Z","planLabel":"Pro","session":null,"weeklyAll":null,"weeklyScoped":null,"credits":{"usedMinor":321,"limitMinor":6543,"balanceMinor":111,"currency":"USD","exponent":2,"resetsAt":"2026-09-01T00:00:00Z"},"stale":false,"error":null}"#.utf8)
+let historicalCredits = try! decoder.decode(UsageSnapshot.self, from: historicalCreditsJSON)
+eq(historicalCredits.credits?.usedMinor, 321, "historical credits snapshot still decodes")
+let creditsRoundTrip = try! decoder.decode(UsageSnapshot.self, from: encoder.encode(creditsSnapshot))
+eq(creditsRoundTrip.credits, decodedCredits, "credits snapshot round trip")
 
 print("formatting:")
 eq(countdownString(to: now.addingTimeInterval(4 * 3600 + 53 * 60), from: now), "4h 53m", "4h 53m")
@@ -198,6 +305,14 @@ utc.timeZone = TimeZone(identifier: "UTC")!
 let next = firstOfNextMonth(after: now, calendar: utc)
 eq(utc.dateComponents([.month], from: next).month, 9, "credits reset -> September")
 eq(utc.dateComponents([.day], from: next).day, 1, "credits reset -> day 1")
+// Money formatting follows the user's locale, so these assertions pin one explicitly.
+let enUS = Locale(identifier: "en_US")
+eq(moneyString(minor: 1234, exponent: 2, currency: "USD", locale: enUS), "$12.34", "USD minor units")
+check(moneyString(minor: nonUSDSpend.usedMinor,
+                  exponent: nonUSDSpend.exponent,
+                  currency: nonUSDSpend.currency,
+                  locale: enUS).contains("1.250"),
+      "exponent-3 money keeps three fractional digits")
 
 print("threshold planner (notify every 10% per window, every $10 of credits):")
 func snap(session: LimitBar? = nil,

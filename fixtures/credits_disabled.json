@@ -1,0 +1,16 @@
+{
+  "spend": {
+    "used": {
+      "amount_minor": 222,
+      "currency": "USD",
+      "exponent": 2
+    },
+    "limit": {
+      "amount_minor": 7500
+    },
+    "percent": 2.96,
+    "severity": "normal",
+    "enabled": false
+  },
+  "fixture_junk_key": "disabled fixture junk"
+}
