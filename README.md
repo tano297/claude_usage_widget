@@ -2,7 +2,8 @@
 
 A native macOS **Notification Center / desktop widget** that shows the limits from Claude Code's
 `/usage` panel: current session, current week, and any per-model weekly limits. It also shows the
-signed-in account email and plan label in the menu-bar popover and medium widget.
+signed-in account email, plan label, and best-effort usage credits in the menu-bar popover and
+medium widget.
 
 <p align="center">
   <img src="docs/widget.png" alt="Claude Usage widget in Notification Center" width="350">
@@ -26,8 +27,8 @@ Clone the repo, open **Claude Code** in the repo folder, and paste this prompt:
 
 ```text
 Install this macOS "Claude Usage" widget for me from this repo.
-1. Read README.md and SECURITY.md, then tell me in 2 lines how the app gets usage without reading
-   or holding my Claude credentials.
+1. Read README.md and SECURITY.md, then tell me in 2 lines how the primary CLI usage fetch and the
+   optional, in-memory usage-credits fetch handle authentication.
 2. Check my prerequisites: macOS; Claude Code installed and signed in via `claude`; Xcode.app;
    Homebrew; and Xcode signed in with an Apple ID for a free Personal Team.
 3. Install anything missing that is safe to install non-interactively (e.g. `brew install xcodegen`).
@@ -45,15 +46,15 @@ Prefer to drive it yourself? Jump to [Manual install](#manual-install).
 - **Session**, **Weekly**, and per-model **Weekly · <model>** utilization with live reset
   countdowns. Rows appear only when Claude's `/usage` output reports them.
 - **Account context** — the signed-in email appears below the plan label on surfaces with room.
+- **Usage credits (best effort)** — spent versus limit when Claude Code's promptless Keychain item
+  remains available; this supplement auto-disables if access could start prompting.
 - **Plan labels** from Claude Code (`Max`, `Pro`, `Team`, `Free`, or `Enterprise`). The CLI output
   does not expose Max's 5×/20× tier, so the widget intentionally shows simply `Max`.
 - Anthropic-clay identity color (`#D97757`) with warmer severity escalation as a limit fills.
 - **Tap-to-refresh (↻)** plus a live **Updated … ago** freshness indicator.
 - A companion menu-bar readout, refresh button, notifications, and launch-at-login control.
-- Runs locally with no project server or telemetry. Claude Code handles its own authentication and
-  vendor request; the app never reads or holds a credential.
-
-The `/usage` prose currently has no credits row, so fresh snapshots do not show usage credits.
+- Runs locally with no project server or telemetry. The supplemental token is held in memory only
+  for its direct Anthropic usage request and is never logged or persisted.
 
 ## How it works
 
@@ -63,13 +64,18 @@ ClaudeUsage.app (non-sandboxed menu-bar agent)
         ├─► claude auth status --json
         │      consume only loggedIn, email, subscriptionType
         │
-        └─► claude -p /usage --output-format json
-              --strict-mcp-config --no-session-persistence
-                       │
-                       ▼
-              whitelist three usage-bar line forms
-                       │
-                       ▼
+        ├─► claude -p /usage --output-format json
+        │      --strict-mcp-config --no-session-persistence
+        │               │
+        │               ▼
+        │      whitelist three usage-bar line forms
+        │
+        └─► optional: /usr/bin/security (4 s deadline)
+                    │ in-memory bearer token only
+                    └─► GET api.anthropic.com/api/oauth/usage
+                              whitelist spend fields only
+                        │
+                        ▼
 ~/Library/Application Support/ClaudeUsage/usage.json
                        ▲  read-only sandbox path exception
                        │
@@ -80,6 +86,9 @@ The agent spawns the Claude Code CLI, which handles its own authentication and n
 discards everything except auth status's `loggedIn`, `email`, and `subscriptionType` fields and the
 three recognized `/usage` bar-line forms. In particular, the “What's contributing” analytics block
 is never written to the snapshot.
+
+Credits are a separate supplement. Their failure cannot make the CLI snapshot stale, change its
+error, or prevent bars and email from being saved.
 
 The widget reads one JSON file through a read-only sandbox path exception. This deliberately avoids
 App Groups, which require a registered group identifier; local personal-team signing is sufficient.
@@ -102,9 +111,9 @@ sign-in (Settings ▸ Accounts) for a free Personal Team. From the repo root:
 # ./scripts/install.sh <TEAM_ID> # if auto-detect cannot find your team
 ```
 
-No Keychain approval is required. Open **Notification Center** → **Edit Widgets** → add **Claude
-Usage** (medium). Launch at login is enabled automatically on first run and can be changed from the
-menu-bar gauge.
+The credits read is promptless with Claude Code's current Keychain ACL. Open **Notification Center**
+→ **Edit Widgets** → add **Claude Usage** (medium). Launch at login is enabled automatically on first
+run and can be changed from the menu-bar gauge.
 
 <details>
 <summary>Prefer to run the steps yourself</summary>
@@ -121,7 +130,7 @@ open ClaudeUsage.xcodeproj         # ⌘R (or: make build)
 
 ```bash
 make check        # or: swift run DataLayerCheck → "ALL CHECKS PASSED"
-make live         # or: swift run DataLayerCheck --live (Claude CLI → parsed snapshot)
+make live         # or: swift run DataLayerCheck --live (Claude CLI + best-effort credits)
 bash scripts/fetch_usage.sh        # same two CLI calls, printing only recognized fields/lines
 ```
 
@@ -129,7 +138,7 @@ bash scripts/fetch_usage.sh        # same two CLI calls, printing only recognize
 
 | Path | What |
 |------|------|
-| `Shared/` | Model, CLI subprocess client, parser, formatting, and snapshot store |
+| `Shared/` | Model, primary CLI client, supplemental credits client, formatting, and store |
 | `SharedUI/` | SwiftUI pieces shared by the menu-bar popover and widget |
 | `ClaudeUsageApp/` | Background menu-bar agent, timer, notifications, and login item |
 | `ClaudeUsageWidget/` | Sandboxed WidgetKit extension |
@@ -153,6 +162,26 @@ bash scripts/fetch_usage.sh        # same two CLI calls, printing only recognize
 - A failed or changed response never replaces good numbers: the prior snapshot is marked stale and
   the UI shows a fixed, non-sensitive error message.
 
+## Usage credits (best effort)
+
+Claude Code's `/usage` prose does not include the credits panel, so the app optionally reads Claude
+Code's OAuth blob by spawning exactly `/usr/bin/security`, then sends the token only to Anthropic's
+usage endpoint. That Keychain read is promptless today because Claude Code creates the item through
+`/usr/bin/security`; the token stays in memory and only whitelisted spend values reach `usage.json`.
+
+Anthropic has said this Keychain surface will be hardened. The read therefore has a four-second
+breaker: a failed, malformed, or hung Keychain read—or an HTTP 403—turns **Show usage credits** off
+permanently until the user turns it back on. Any non-instant read trips it, including one the user
+approves: a promptless read takes about ten milliseconds, so a read that succeeds only after more
+than a second is discarded as a prompt that someone answered. The worst case is one password dialog,
+ever—never a second one on a later refresh. The menu shows the stored fixed reason when this
+happens. Manually switching the option off also prevents reads, while switching it back on clears
+both the manual/automatic disable and its reason.
+
+HTTP 401, rate limiting, server errors, and network failures hide credits for that cycle without
+tripping the breaker. In every case the CLI-derived bars, email, freshness, and error state continue
+normally.
+
 **Launch at login.** The agent must be running for the widget to stay current, so its first launch
 registers it as a login item. Keep the app in `/Applications`; `SMAppService` may refuse a DerivedData
 or quarantined copy. Verify it with `pgrep -lf ClaudeUsage.app/Contents/MacOS/ClaudeUsage` or open the
@@ -160,10 +189,11 @@ menu-bar gauge and inspect the freshness row.
 
 ## Security
 
-The app does not read Claude credentials and makes no direct usage request. It launches Claude Code
-with a minimal environment allowlist, closes stdin, discards stderr, and persists only recognized
-usage bars plus the plan label and account email. The snapshot directory is mode `0700`, and
-`usage.json` is mode `0600`. Full details are in [SECURITY.md](SECURITY.md).
+The primary pipeline launches Claude Code with a minimal environment allowlist, closes stdin, and
+discards stderr. The optional credits supplement reads one token through `/usr/bin/security`, holds
+it only in memory for the Anthropic usage endpoint, and auto-disables when promptless access looks
+unsafe. The snapshot directory is mode `0700`, and `usage.json` is mode `0600`. Full details are in
+[SECURITY.md](SECURITY.md).
 
 ## Roadmap
 

@@ -1,0 +1,16 @@
+{
+  "spend": {
+    "used": {
+      "amount_minor": 1250,
+      "currency": "KWD",
+      "exponent": 3
+    },
+    "limit": {
+      "amount_minor": 50000
+    },
+    "percent": 2.5,
+    "severity": "normal",
+    "enabled": true
+  },
+  "fixture_junk_key": "non-USD fixture junk"
+}

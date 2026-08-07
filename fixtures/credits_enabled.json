@@ -1,0 +1,20 @@
+{
+  "spend": {
+    "used": {
+      "amount_minor": 1234,
+      "currency": "USD",
+      "exponent": 2,
+      "display_hint": "invented and ignored"
+    },
+    "limit": {
+      "amount_minor": 9876,
+      "currency": "USD",
+      "exponent": 2
+    },
+    "percent": 12.5,
+    "severity": "warning",
+    "enabled": true,
+    "amber_ladder": ["invented", "ignored"]
+  },
+  "fixture_junk_key": "must never reach the snapshot"
+}
