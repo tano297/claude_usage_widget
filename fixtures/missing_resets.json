@@ -1,0 +1,8 @@
+[
+  {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "result": "Current session: 12% used\nCurrent week (all models): 34% used\nCurrent week (Fable): 56% used"
+  }
+]

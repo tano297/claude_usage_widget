@@ -2,8 +2,8 @@ import Foundation
 
 // MARK: - Severity
 
-/// Normalized limit severity. The API sometimes supplies a `severity` string; when it is
-/// missing we derive one from the utilization percent so colors stay consistent.
+/// Normalized limit severity. When a source does not supply a severity value, derive one from the
+/// utilization percent so colors stay consistent.
 public enum Severity: String, Codable, Sendable, Equatable {
     case normal
     case warning
@@ -21,7 +21,7 @@ public enum Severity: String, Codable, Sendable, Equatable {
         }
     }
 
-    /// Prefer the API-provided severity; otherwise bucket by percent.
+    /// Prefer a source-provided severity; otherwise bucket by percent.
     public static func from(percent: Double, apiValue: String?) -> Severity {
         if let apiValue, !apiValue.isEmpty {
             let s = Severity(apiValue: apiValue)
@@ -50,9 +50,8 @@ public struct LimitBar: Codable, Sendable, Equatable {
     }
 }
 
-/// A model-scoped weekly limit — e.g. "Weekly · Opus", "Weekly · Fable". The API delivers these
-/// generically as `weekly_scoped` limit entries carrying the model's display name, so the widget
-/// renders whatever models an account has separate caps for instead of hard-coding one.
+/// A model-scoped weekly limit — e.g. "Weekly · Opus", "Weekly · Fable". Claude's `/usage`
+/// prose labels these rows with the model display name, so the UI need not hard-code one.
 public struct ScopedLimit: Codable, Sendable, Equatable, Identifiable {
     public var name: String
     public var bar: LimitBar
@@ -89,10 +88,14 @@ public struct CreditsInfo: Codable, Sendable, Equatable {
     }
 }
 
-/// Everything the widget renders. Written by the agent to the App Group, read by the widget.
+/// Everything the widget renders. Written to Application Support by the agent and read there by
+/// the widget through its read-only path exception.
 public struct UsageSnapshot: Codable, Sendable, Equatable {
     public var fetchedAt: Date
     public var planLabel: String
+    /// Account metadata from `claude auth status`. Optional so snapshots written before the email
+    /// field was introduced remain Codable-compatible.
+    public var email: String?
     public var session: LimitBar?
     public var weeklyAll: LimitBar?
     /// Per-model weekly limits (Opus, Fable, …). Optional so snapshots written by older versions,
@@ -104,6 +107,7 @@ public struct UsageSnapshot: Codable, Sendable, Equatable {
 
     public init(fetchedAt: Date,
                 planLabel: String,
+                email: String? = nil,
                 session: LimitBar?,
                 weeklyAll: LimitBar?,
                 weeklyScoped: [ScopedLimit]?,
@@ -112,6 +116,7 @@ public struct UsageSnapshot: Codable, Sendable, Equatable {
                 error: String?) {
         self.fetchedAt = fetchedAt
         self.planLabel = planLabel
+        self.email = email
         self.session = session
         self.weeklyAll = weeklyAll
         self.weeklyScoped = weeklyScoped
@@ -123,10 +128,11 @@ public struct UsageSnapshot: Codable, Sendable, Equatable {
     /// An explicit "no data yet" state — the widget shows this (a clear message) instead of
     /// fabricated placeholder numbers when there's no snapshot on disk (first run, agent not
     /// running, unreadable file). `stale` is true and every limit is nil.
-    public static func noData(now: Date = Date()) -> UsageSnapshot {
+    public static func noData(now: Date = Date(),
+                              error: String = "Waiting for first update — is Claude Usage running?") -> UsageSnapshot {
         UsageSnapshot(fetchedAt: now, planLabel: "Claude",
                       session: nil, weeklyAll: nil, weeklyScoped: nil, credits: nil,
-                      stale: true, error: "Waiting for first update — is Claude Usage running?")
+                      stale: true, error: error)
     }
 
     /// Fake but representative data — used ONLY for the WidgetKit gallery/preview, never as a
@@ -134,7 +140,8 @@ public struct UsageSnapshot: Codable, Sendable, Equatable {
     public static func placeholder(now: Date = Date()) -> UsageSnapshot {
         UsageSnapshot(
             fetchedAt: now,
-            planLabel: "Max (20x)",
+            planLabel: "Max",
+            email: "user@example.com",
             session: LimitBar(percent: 0, resetsAt: now.addingTimeInterval(4 * 3600 + 53 * 60), severity: .normal),
             weeklyAll: LimitBar(percent: 81, resetsAt: now.addingTimeInterval(23 * 60), severity: .warning),
             weeklyScoped: nil,
@@ -147,27 +154,16 @@ public struct UsageSnapshot: Codable, Sendable, Equatable {
 
 // MARK: - Plan label
 
-/// Human label for the plan, from the OAuth `rateLimitTier` (fallback: `subscriptionType`).
-public func planLabel(rateLimitTier: String?, subscriptionType: String?) -> String {
-    switch rateLimitTier {
-    case "default_claude_max_20x": return "Max (20x)"
-    case "default_claude_max_5x":  return "Max (5x)"
-    case "default_claude_pro":     return "Pro"
-    case "default_claude_free":    return "Free"
-    case let .some(raw) where !raw.isEmpty:
-        // Prettify e.g. "default_claude_team" -> "Team".
-        let cleaned = raw
-            .replacingOccurrences(of: "default_", with: "")
-            .replacingOccurrences(of: "claude_", with: "")
-            .replacingOccurrences(of: "_", with: " ")
-        return cleaned.split(separator: " ").map { $0.capitalized }.joined(separator: " ")
-    default:
-        switch subscriptionType?.lowercased() {
-        case "max":  return "Max"
-        case "pro":  return "Pro"
-        case "team": return "Team"
-        case "free": return "Free"
-        default:     return "Claude"
-        }
+/// Human label for the plan reported by `claude auth status --json`.
+public func planLabel(subscriptionType: String?) -> String {
+    guard let raw = subscriptionType?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !raw.isEmpty else { return "Claude" }
+    switch raw.lowercased() {
+    case "max":        return "Max"
+    case "pro":        return "Pro"
+    case "team":       return "Team"
+    case "free":       return "Free"
+    case "enterprise": return "Enterprise"
+    default:            return raw.capitalized
     }
 }

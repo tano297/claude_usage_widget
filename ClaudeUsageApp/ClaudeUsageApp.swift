@@ -3,10 +3,9 @@ import AppKit
 import WidgetKit
 import ServiceManagement
 
-// The container app runs as a background agent (LSUIElement): no Dock icon, just a small menu
-// bar item. Its job is to read the Keychain token, call the usage endpoint, write the snapshot
-// to the App Group, and nudge the widget to reload. The Notification Center widget is the main
-// surface; the menu bar item is a convenient control + at-a-glance readout.
+// The container app runs as a non-sandboxed background agent (LSUIElement) so it can launch the
+// Claude CLI. It writes the parsed snapshot to Application Support and nudges the widget to reload;
+// the menu bar item is a convenient control + at-a-glance readout.
 
 @main
 struct ClaudeUsageApp: App {
@@ -35,14 +34,8 @@ final class UsageAgent: ObservableObject {
     let refreshInterval: TimeInterval = 180
     private var timer: Timer?
 
-    /// In-memory credential cache so normal polls never hit the Keychain (which is what triggers the
-    /// macOS access prompt). Read from the Keychain only at first launch and near token expiry.
-    private var cachedCreds: ClaudeCredentials?
-
-    // Rate-limit protection: coalesce bursts (menu-open, widget button, timer) into at most one live
-    // fetch per `minFetchInterval`, and honor a 429 backoff so we never hammer the endpoint.
+    // Coalesce bursts (menu-open, widget button, timer) into at most one live fetch per interval.
     private var lastFetchAt = Date.distantPast
-    private var backoffUntil = Date.distantPast
     private let minFetchInterval: TimeInterval = 20
 
     init() {
@@ -69,17 +62,15 @@ final class UsageAgent: ObservableObject {
     func refresh() async {
         guard !isRefreshing else { return }   // serialize: never run two refreshes at once
         let now = Date()
-        // Skip the network when we're inside a 429 backoff or a request happened very recently;
-        // still repaint the widget so the age (and any last data) render.
-        if now < backoffUntil || now.timeIntervalSince(lastFetchAt) < minFetchInterval {
+        // Skip the subprocess when a fetch happened very recently; still repaint the widget so the
+        // age (and any last data) render.
+        if now.timeIntervalSince(lastFetchAt) < minFetchInterval {
             WidgetCenter.shared.reloadAllTimelines()
             return
         }
         isRefreshing = true
         lastFetchAt = now
-        let (snap, creds, retryAfter) = await UsageClient.fetchSnapshot(using: cachedCreds)
-        cachedCreds = creds   // reuse next time; nil re-reads the Keychain (e.g. after "Token expired")
-        if let retryAfter { backoffUntil = Date().addingTimeInterval(max(retryAfter, 60)) }
+        let snap = await UsageClient.fetchSnapshot(previous: snapshot)
         try? SharedStore.save(snap)
         snapshot = snap
         notifyThresholds(for: snap)
@@ -126,13 +117,16 @@ struct MenuContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let s = agent.snapshot {
-                HStack(spacing: 6) {
-                    Text("Claude").font(.headline).foregroundStyle(ClaudeTheme.clay)
-                    Text(s.planLabel).font(.subheadline).foregroundStyle(.secondary)
-                    Spacer()
-                    if agent.isRefreshing {
-                        ProgressView().controlSize(.small)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text("Claude").font(.headline).foregroundStyle(ClaudeTheme.clay)
+                        Text(s.planLabel).font(.subheadline).foregroundStyle(.secondary)
+                        Spacer()
+                        if agent.isRefreshing {
+                            ProgressView().controlSize(.small)
+                        }
                     }
+                    AccountEmailLine(email: s.email)
                 }
                 let hasData = s.session != nil || s.weeklyAll != nil || !(s.weeklyScoped?.isEmpty ?? true) || s.credits != nil
                 if hasData {

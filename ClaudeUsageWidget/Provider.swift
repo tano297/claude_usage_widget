@@ -6,8 +6,8 @@ struct UsageEntry: TimelineEntry {
     let snapshot: UsageSnapshot
 }
 
-/// Reads the snapshot the agent wrote to the App Group. The widget never touches the Keychain or
-/// the network itself — the sandbox forbids reading Claude Code's Keychain item.
+/// The widget renders the snapshot the agent wrote. It never launches Claude or uses the network;
+/// its sandbox only permits read access to the snapshot directory.
 struct UsageProvider: TimelineProvider {
     func placeholder(in context: Context) -> UsageEntry {
         UsageEntry(date: Date(), snapshot: .placeholder())

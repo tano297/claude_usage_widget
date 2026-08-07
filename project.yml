@@ -19,8 +19,8 @@ settings:
     ENABLE_HARDENED_RUNTIME: NO
 
 targets:
-  # Background agent app (no Dock icon) — reads Keychain, fetches usage, writes the shared
-  # snapshot file, reloads the widget. Non-sandboxed. Embeds the widget extension.
+  # Background agent app (no Dock icon) — launches Claude, writes the shared snapshot file, and
+  # reloads the widget. Non-sandboxed. Embeds the widget extension.
   ClaudeUsage:
     type: application
     platform: macOS
@@ -34,7 +34,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.claudeusage.app
-        # Non-sandboxed (no entitlements) so it can read Claude Code's Keychain item.
+        # Non-sandboxed (no entitlements) so it can launch the Claude CLI.
     info:
       path: ClaudeUsageApp/Info.plist
       properties:

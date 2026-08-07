@@ -1,0 +1,22 @@
+[
+  {
+    "type": "system",
+    "subtype": "init",
+    "session_id": "fixture-session"
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "content": [
+        {"type": "text", "text": "Fixture-only assistant content"}
+      ]
+    }
+  },
+  {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 1842,
+    "result": "You are currently using your subscription to power your Claude Code usage\n\nCurrent session: 16% used · resets Aug 7 at 7:29pm (America/Denver)\nCurrent week (all models): 4% used · resets Aug 9 at 4:59pm (America/Denver)\nCurrent week (Fable): 6% used · resets Aug 9 at 4:59pm (America/Denver)\n\nWhat's contributing to your limits usage?\n\nRequests by feature\nFixtureSkillAlpha: 41% · 23 requests\nFixtureSubagentBeta: 27% · 11 requests\nFixturePluginGamma: 19% · 7 requests\nfixture-mcp-server: 13% · 5 requests\n\nRecent activity\nFixture-only analytics text that must be discarded"
+  }
+]

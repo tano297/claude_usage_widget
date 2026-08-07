@@ -1,340 +1,367 @@
 import Foundation
-#if canImport(Security)
-import Security
-#endif
 
-// MARK: - Raw API shape (https://api.anthropic.com/api/oauth/usage)
+// MARK: - Claude CLI response shapes
 
-enum RawUsage {
-    struct Response: Decodable {
-        struct Window: Decodable {
-            let utilization: Double?
-            let resets_at: String?
-        }
-        struct Money: Decodable {
-            let amount_minor: Int?
-            let currency: String?
-            let exponent: Int?
-        }
-        struct Spend: Decodable {
-            let used: Money?
-            let limit: Money?
-            let percent: Double?
-            let severity: String?
-            let enabled: Bool?
-            let balance: Money?
-        }
-        struct ExtraUsage: Decodable {
-            let is_enabled: Bool?
-            let monthly_limit: Int?
-            let used_credits: Double?
-            let currency: String?
-            let decimal_places: Int?
-        }
-        struct ModelScope: Decodable {
-            let id: String?
-            let display_name: String?
-        }
-        struct Scope: Decodable {
-            let model: ModelScope?
-        }
-        struct LimitEntry: Decodable {
-            let kind: String?
-            let group: String?
-            let percent: Double?
-            let severity: String?
-            let resets_at: String?
-            let is_active: Bool?
-            let scope: Scope?
-        }
+public struct ClaudeAuthStatus: Sendable, Equatable {
+    public let loggedIn: Bool
+    public let email: String?
+    public let subscriptionType: String?
 
-        let five_hour: Window?
-        let seven_day: Window?
-        let seven_day_opus: Window?
-        let extra_usage: ExtraUsage?
-        let spend: Spend?
-        let limits: [LimitEntry]?
+    public init(loggedIn: Bool, email: String?, subscriptionType: String?) {
+        self.loggedIn = loggedIn
+        self.email = email
+        self.subscriptionType = subscriptionType
     }
 }
 
-// MARK: - Parser (pure; unit-tested against fixtures)
+private struct RawAuthStatus: Decodable {
+    let loggedIn: Bool
+    let email: String?
+    let subscriptionType: String?
+}
+
+private struct RawUsageMessage: Decodable {
+    let type: String?
+    let subtype: String?
+    let isError: Bool?
+    let result: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case subtype
+        case isError = "is_error"
+        case result
+    }
+}
+
+public enum UsageParseError: Error, Equatable {
+    case missingResult
+    case resultError
+    case noUsageBars
+}
+
+// MARK: - Parser (pure; checked against fixtures)
 
 public enum UsageParser {
+    /// Decode only the three auth fields the snapshot pipeline is allowed to consume. Unknown
+    /// fields such as organization identifiers are ignored by `Decodable` and never propagated.
+    public static func parseAuthStatus(_ data: Data) throws -> ClaudeAuthStatus {
+        let raw = try JSONDecoder().decode(RawAuthStatus.self, from: data)
+        return ClaudeAuthStatus(loggedIn: raw.loggedIn,
+                                email: raw.email,
+                                subscriptionType: raw.subscriptionType)
+    }
+
+    /// Find Claude's successful result envelope, then whitelist only the recognized usage-bar
+    /// lines. The rest of `/usage` may contain account analytics and extension names; none of that
+    /// text is copied into the returned snapshot.
     public static func parse(_ data: Data,
                              planLabel: String,
+                             email: String? = nil,
                              now: Date,
                              fetchedAt: Date) throws -> UsageSnapshot {
-        let raw = try JSONDecoder().decode(RawUsage.Response.self, from: data)
+        let messages = try JSONDecoder().decode([RawUsageMessage].self, from: data)
+        guard let message = messages.first(where: { $0.type == "result" }) else {
+            throw UsageParseError.missingResult
+        }
+        guard message.isError == false, message.subtype == "success", let prose = message.result else {
+            throw UsageParseError.resultError
+        }
 
-        func entry(_ kinds: Set<String>) -> RawUsage.Response.LimitEntry? {
-            raw.limits?.first { e in
-                guard let k = e.kind?.lowercased() else { return false }
-                return kinds.contains(k)
+        var session: LimitBar?
+        var weeklyAll: LimitBar?
+        var weeklyScoped: [ScopedLimit] = []
+
+        for rawLine in prose.split(whereSeparator: \Character.isNewline) {
+            let line = String(rawLine)
+            if let match = captures(in: line,
+                                    pattern: #"^Current session: ([0-9]+)% used(?: (?:·|-) resets (.+))?$"#),
+               let percent = Double(match[0]) {
+                session = makeBar(percent: percent, resetText: match[1], now: now)
+                continue
+            }
+            if let match = captures(in: line,
+                                    pattern: #"^Current week \(all models\): ([0-9]+)% used(?: (?:·|-) resets (.+))?$"#),
+               let percent = Double(match[0]) {
+                weeklyAll = makeBar(percent: percent, resetText: match[1], now: now)
+                continue
+            }
+            if let match = captures(in: line,
+                                    pattern: #"^Current week \((.+)\): ([0-9]+)% used(?: (?:·|-) resets (.+))?$"#),
+               !match[0].isEmpty,
+               let percent = Double(match[1]) {
+                weeklyScoped.append(ScopedLimit(
+                    name: match[0],
+                    bar: makeBar(percent: percent, resetText: match[2], now: now)
+                ))
             }
         }
 
-        func bar(window: RawUsage.Response.Window?, kinds: Set<String>) -> LimitBar? {
-            let match = entry(kinds)
-            // Prefer the typed window; fall back to the normalized limits[] array.
-            if let window, let u = window.utilization {
-                let resets = parseISODate(window.resets_at) ?? parseISODate(match?.resets_at)
-                return LimitBar(percent: u, resetsAt: resets, severity: .from(percent: u, apiValue: match?.severity))
-            }
-            if let match, let p = match.percent {
-                return LimitBar(percent: p, resetsAt: parseISODate(match.resets_at), severity: .from(percent: p, apiValue: match.severity))
-            }
-            return nil
+        guard session != nil || weeklyAll != nil || !weeklyScoped.isEmpty else {
+            throw UsageParseError.noUsageBars
         }
-
-        let session = bar(window: raw.five_hour, kinds: ["session"])
-        let weeklyAll = bar(window: raw.seven_day, kinds: ["weekly_all", "weekly"])
-        let weeklyScoped = scopedLimits(raw: raw)
-        let credits = makeCredits(raw: raw, now: now)
 
         return UsageSnapshot(fetchedAt: fetchedAt,
                              planLabel: planLabel,
+                             email: email,
                              session: session,
                              weeklyAll: weeklyAll,
                              weeklyScoped: weeklyScoped.isEmpty ? nil : weeklyScoped,
-                             credits: credits,
+                             credits: nil,
                              stale: false,
                              error: nil)
     }
 
-    /// Model-scoped weekly limits (Opus, Fable, …).
-    ///
-    /// The API now delivers these generically as `weekly_scoped` `limits[]` entries whose model
-    /// name lives in `scope.model.display_name` — this is what surfaces Fable. Older accounts (and
-    /// the fixtures) still use the dedicated `seven_day_opus` window / `weekly_opus` kind, so we
-    /// fold that legacy Opus limit into the same list when the generic path didn't already produce it.
-    static func scopedLimits(raw: RawUsage.Response) -> [ScopedLimit] {
-        var scoped: [ScopedLimit] = []
-        for e in raw.limits ?? [] where e.kind?.lowercased() == "weekly_scoped" {
-            guard let name = e.scope?.model?.display_name, !name.isEmpty, let p = e.percent else { continue }
-            let bar = LimitBar(percent: p, resetsAt: parseISODate(e.resets_at), severity: .from(percent: p, apiValue: e.severity))
-            scoped.append(ScopedLimit(name: name, bar: bar))
+    /// Returns every capture group, using an empty string for an unmatched optional group.
+    private static func captures(in value: String, pattern: String) -> [String]? {
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(in: value,
+                                                range: NSRange(value.startIndex..., in: value)),
+              match.range == NSRange(value.startIndex..., in: value) else { return nil }
+        return (1..<match.numberOfRanges).map { index in
+            let range = match.range(at: index)
+            guard range.location != NSNotFound, let swiftRange = Range(range, in: value) else { return "" }
+            return String(value[swiftRange])
         }
-        // Legacy dedicated Opus window/entry.
-        if !scoped.contains(where: { $0.name.caseInsensitiveCompare("Opus") == .orderedSame }) {
-            let match = raw.limits?.first { ["weekly_opus", "opus"].contains($0.kind?.lowercased() ?? "") }
-            if let w = raw.seven_day_opus, let u = w.utilization {
-                scoped.append(ScopedLimit(name: "Opus", bar: LimitBar(percent: u, resetsAt: parseISODate(w.resets_at) ?? parseISODate(match?.resets_at), severity: .from(percent: u, apiValue: match?.severity))))
-            } else if let match, let p = match.percent {
-                scoped.append(ScopedLimit(name: "Opus", bar: LimitBar(percent: p, resetsAt: parseISODate(match.resets_at), severity: .from(percent: p, apiValue: match.severity))))
-            }
-        }
-        return scoped
     }
 
-    /// Prefer the richer `spend` block; fall back to `extra_usage`. Only surfaces when enabled.
-    static func makeCredits(raw: RawUsage.Response, now: Date) -> CreditsInfo? {
-        if let spend = raw.spend, spend.enabled == true {
-            let used = spend.used?.amount_minor ?? 0
-            let limit = spend.limit?.amount_minor ?? 0
-            guard limit > 0 || used > 0 else { return nil }
-            let currency = spend.limit?.currency ?? spend.used?.currency ?? "USD"
-            let exponent = spend.limit?.exponent ?? spend.used?.exponent ?? 2
-            return CreditsInfo(usedMinor: used,
-                               limitMinor: limit,
-                               balanceMinor: spend.balance?.amount_minor,
-                               currency: currency,
-                               exponent: exponent,
-                               resetsAt: firstOfNextMonth(after: now))
-        }
-        if let ex = raw.extra_usage, ex.is_enabled == true, let limit = ex.monthly_limit, limit > 0 {
-            let exponent = ex.decimal_places ?? 2
-            // `used_credits` is a major-unit amount; scale to minor units to match the cap.
-            let usedMinor = Int(((ex.used_credits ?? 0) * pow(10.0, Double(exponent))).rounded())
-            return CreditsInfo(usedMinor: usedMinor,
-                               limitMinor: limit,
-                               balanceMinor: nil,
-                               currency: ex.currency ?? "USD",
-                               exponent: exponent,
-                               resetsAt: firstOfNextMonth(after: now))
+    private static func makeBar(percent: Double, resetText: String, now: Date) -> LimitBar {
+        LimitBar(percent: percent,
+                 resetsAt: parseResetDate(resetText, now: now),
+                 severity: .from(percent: percent, apiValue: nil))
+    }
+
+    /// Claude omits the year from reset labels. Interpret the label in its named IANA timezone,
+    /// then roll it forward one year when the current-year date is clearly across a year boundary.
+    static func parseResetDate(_ value: String, now: Date) -> Date? {
+        guard let match = captures(in: value,
+                                   pattern: #"^([A-Za-z]{3} [0-9]{1,2} at [0-9]{1,2}(?::[0-9]{2})?[aApP][mM]) \(([^()]+)\)$"#),
+              let timeZone = TimeZone(identifier: match[1]) else { return nil }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let year = calendar.component(.year, from: now)
+        let input = "\(match[0]) \(year)"
+        let formats = ["MMM d 'at' h:mma yyyy", "MMM d 'at' ha yyyy"]
+
+        for format in formats {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = calendar
+            formatter.timeZone = timeZone
+            formatter.dateFormat = format
+            formatter.isLenient = false
+            guard var result = formatter.date(from: input) else { continue }
+
+            if let sixMonthsAgo = calendar.date(byAdding: .month, value: -6, to: now),
+               result < sixMonthsAgo,
+               let nextYear = calendar.date(byAdding: .year, value: 1, to: result) {
+                result = nextYear
+            }
+            return result
         }
         return nil
     }
 }
 
-// MARK: - Keychain credentials
+// MARK: - Process client
 
-public struct ClaudeCredentials: Sendable {
-    public let accessToken: String
-    public let refreshToken: String?
-    public let expiresAt: Date?
-    public let rateLimitTier: String?
-    public let subscriptionType: String?
-
-    public init(accessToken: String, refreshToken: String?, expiresAt: Date?,
-                rateLimitTier: String?, subscriptionType: String?) {
-        self.accessToken = accessToken
-        self.refreshToken = refreshToken
-        self.expiresAt = expiresAt
-        self.rateLimitTier = rateLimitTier
-        self.subscriptionType = subscriptionType
-    }
-
-    public var isExpired: Bool {
-        guard let expiresAt else { return false }
-        return expiresAt < Date()
-    }
-
-    /// True if the token is expired or expires within `seconds`.
-    public func expiresSoon(within seconds: TimeInterval = 120) -> Bool {
-        guard let expiresAt else { return false }
-        return expiresAt < Date().addingTimeInterval(seconds)
-    }
+private enum UsageClientError: Error {
+    case claudeNotFound
+    case timedOut
+    case signedOut
+    case unusableOutput
 }
-
-/// Read Claude Code's OAuth credentials from the login Keychain (service "Claude Code-credentials").
-/// Triggers a one-time "Always Allow" prompt for a non-sandboxed process.
-public func readClaudeCredentials() -> ClaudeCredentials? {
-    #if canImport(Security)
-    let query: [String: Any] = [
-        kSecClass as String: kSecClassGenericPassword,
-        kSecAttrService as String: "Claude Code-credentials",
-        kSecReturnData as String: true,
-        kSecMatchLimit as String: kSecMatchLimitOne,
-    ]
-    var item: CFTypeRef?
-    guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-          let data = item as? Data else { return nil }
-
-    struct Blob: Decodable {
-        struct OAuth: Decodable {
-            let accessToken: String
-            let refreshToken: String?
-            let expiresAt: Double?
-            let subscriptionType: String?
-            let rateLimitTier: String?
-        }
-        let claudeAiOauth: OAuth
-    }
-    guard let blob = try? JSONDecoder().decode(Blob.self, from: data) else { return nil }
-    let expires = blob.claudeAiOauth.expiresAt.map { Date(timeIntervalSince1970: $0 / 1000) }
-    return ClaudeCredentials(accessToken: blob.claudeAiOauth.accessToken,
-                             refreshToken: blob.claudeAiOauth.refreshToken,
-                             expiresAt: expires,
-                             rateLimitTier: blob.claudeAiOauth.rateLimitTier,
-                             subscriptionType: blob.claudeAiOauth.subscriptionType)
-    #else
-    return nil
-    #endif
-}
-
-// MARK: - Live fetch
 
 public enum UsageClient {
-    public static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+    static let authTimeout: TimeInterval = 10
+    static let usageTimeout: TimeInterval = 30
 
-    /// The `/usage` endpoint expects a `claude-code/<version>` User-Agent — a missing/foreign UA
-    /// lands in an aggressively rate-limited bucket. GUI apps have a minimal PATH so `claude` often
-    /// isn't found; fall back to the installed version directory before the static default.
-    static let cachedUserAgent: String = {
-        #if os(macOS)
-        if let v = claudeVersionFromProcess() { return "claude-code/\(v)" }
-        if let v = claudeVersionFromInstallDir() { return "claude-code/\(v)" }
-        #endif
-        return "claude-code/2.1.0"
-    }()
-
-    #if os(macOS)
-    private static func claudeVersionFromProcess() -> String? {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["claude", "--version"]
-        let out = Pipe(); proc.standardOutput = out; proc.standardError = Pipe()
-        do {
-            try proc.run(); proc.waitUntilExit()
-            let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            if let r = text.range(of: #"\d+\.\d+\.\d+"#, options: .regularExpression) { return String(text[r]) }
-        } catch {}
-        return nil
-    }
-    private static func claudeVersionFromInstallDir() -> String? {
-        guard let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir else { return nil }
-        let dir = URL(fileURLWithPath: String(cString: home)).appendingPathComponent(".local/share/claude/versions")
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-        return names.filter { $0.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil }
-                    .max { $0.compare($1, options: .numeric) == .orderedAscending }
-    }
-    #endif
-
-    private enum RequestResult { case success(Data); case http(Int, retryAfter: TimeInterval?); case failure(String) }
-
-    private static func performRequest(accessToken: String) async -> RequestResult {
-        var req = URLRequest(url: endpoint)
-        req.httpMethod = "GET"
-        req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        req.setValue(cachedUserAgent, forHTTPHeaderField: "User-Agent")
-        req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 20
-        do {
-            let (data, resp) = try await URLSession.shared.data(for: req)
-            guard let http = resp as? HTTPURLResponse else { return .failure("Bad response from server.") }
-            guard http.statusCode == 200 else {
-                let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap { TimeInterval($0) }
-                return .http(http.statusCode, retryAfter: retryAfter)
+    /// Fetch auth metadata and usage through Claude Code. On failure, retain the previous values
+    /// and mark them stale; first-run failures return an explicit no-data snapshot.
+    public static func fetchSnapshot(previous: UsageSnapshot? = nil) async -> UsageSnapshot {
+        let result: Result<UsageSnapshot, Error> = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: Result { try fetchFromClaude() })
             }
-            return .success(data)
-        } catch {
-            return .failure(error.localizedDescription)
         }
-    }
 
-    /// Fetch + parse. Pass `using` a cached credential to avoid a Keychain read on every call.
-    /// This client is deliberately read-only with respect to Claude Code credentials: it never
-    /// refreshes, rewrites, or deletes the Keychain item. On any failure, reuses the last good
-    /// snapshot marked stale.
-    public static func fetchSnapshot(now: Date = Date(),
-                                     using provided: ClaudeCredentials? = nil) async -> (snapshot: UsageSnapshot, creds: ClaudeCredentials?, retryAfter: TimeInterval?) {
-        // Ignore a cached token that's expiring: re-read the Keychain to pick up Claude Code's
-        // refreshed token, so a long-running agent never gets stuck retrying an expired token.
-        let usableProvided = (provided?.expiresSoon() ?? false) ? nil : provided
-        guard let creds = usableProvided ?? readClaudeCredentials() else {
-            let s = UsageSnapshot(fetchedAt: now, planLabel: "Claude",
-                                  session: nil, weeklyAll: nil, weeklyScoped: nil, credits: nil,
-                                  stale: true,
-                                  error: "No Claude Code credentials found. Sign in with `claude`.")
-            return (s, nil, nil)
-        }
-        let label = planLabel(rateLimitTier: creds.rateLimitTier, subscriptionType: creds.subscriptionType)
-
-        let result = await performRequest(accessToken: creds.accessToken)
-
-        let snapshot: UsageSnapshot
-        var retryAfter: TimeInterval?
-        var invalidateCreds = false
         switch result {
-        case .success(let data):
-            snapshot = (try? UsageParser.parse(data, planLabel: label, now: now, fetchedAt: now))
-                ?? degraded(now: now, label: label, error: "Could not parse usage response.")
-        case .http(let code, let ra):
-            let msg: String
-            switch code {
-            case 401: msg = "Token expired — open Claude Code to refresh."; invalidateCreds = true
-            case 429: msg = "Rate limited by Anthropic — backing off."; retryAfter = ra ?? 90
-            default:  msg = "HTTP \(code)"
-            }
-            snapshot = degraded(now: now, label: label, error: msg)
-        case .failure(let msg):
-            snapshot = degraded(now: now, label: label, error: msg)
+        case .success(let snapshot):
+            return snapshot
+        case .failure(let error):
+            return staleSnapshot(previous: previous, message: safeMessage(for: error))
         }
-        // On a 401 the token is bad — return nil creds so the agent re-reads the Keychain next time.
-        return (snapshot, invalidateCreds ? nil : creds, retryAfter)
     }
 
-    /// Last-known snapshot marked stale, or an empty stale snapshot if none exists.
-    static func degraded(now: Date, label: String, error: String) -> UsageSnapshot {
-        if var last = SharedStore.load() {
-            last.stale = true
-            last.error = error
-            last.planLabel = label
-            return last
+    private static func fetchFromClaude() throws -> UsageSnapshot {
+        var email: String?
+        var subscriptionType: String?
+
+        // Auth metadata is advisory: an explicit logged-out response stops the pipeline, while an
+        // unavailable or malformed status response must not prevent `/usage` from being attempted.
+        if let data = try? runClaude(arguments: ["auth", "status", "--json"], timeout: authTimeout),
+           let status = try? UsageParser.parseAuthStatus(data) {
+            guard status.loggedIn else { throw UsageClientError.signedOut }
+            email = status.email
+            subscriptionType = status.subscriptionType
         }
-        return UsageSnapshot(fetchedAt: now, planLabel: label,
-                             session: nil, weeklyAll: nil, weeklyScoped: nil, credits: nil,
-                             stale: true, error: error)
+
+        let data = try runClaude(
+            arguments: ["-p", "/usage", "--output-format", "json", "--strict-mcp-config", "--no-session-persistence"],
+            timeout: usageTimeout
+        )
+        let fetchedAt = Date()
+        return try UsageParser.parse(data,
+                                     planLabel: planLabel(subscriptionType: subscriptionType),
+                                     email: email,
+                                     now: fetchedAt,
+                                     fetchedAt: fetchedAt)
+    }
+
+    private static func staleSnapshot(previous: UsageSnapshot?, message: String) -> UsageSnapshot {
+        guard var previous else { return .noData(error: message) }
+        previous.stale = true
+        previous.error = message
+        return previous
+    }
+
+    private static func safeMessage(for error: Error) -> String {
+        guard let clientError = error as? UsageClientError else {
+            return "Claude couldn't return usage. Try again."
+        }
+        switch clientError {
+        case .claudeNotFound:
+            return "Claude Code CLI not found. Install Claude Code, then refresh."
+        case .timedOut:
+            return "Claude took too long to return usage. Try again."
+        case .signedOut:
+            return "Sign in with `claude`, then refresh."
+        case .unusableOutput:
+            return "Claude couldn't return usage. Try again."
+        }
+    }
+
+    /// Run one bounded CLI call with no inherited stdin or stderr. Stdout is retained only long
+    /// enough for the narrow decoders above; it is never logged or used in user-facing errors.
+    private static func runClaude(arguments: [String], timeout: TimeInterval) throws -> Data {
+        guard let executable = claudeExecutable() else { throw UsageClientError.claudeNotFound }
+
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.environment = claudeEnvironment()
+
+        let input = Pipe()
+        let output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            throw UsageClientError.unusableOutput
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        timer.schedule(deadline: .now() + timeout)
+        timer.setEventHandler {
+            if process.isRunning { process.terminate() }
+        }
+        timer.resume()
+
+        defer {
+            timer.cancel()
+            try? input.fileHandleForWriting.close()
+            try? output.fileHandleForReading.close()
+            if process.isRunning { process.terminate() }
+            process.waitUntilExit()
+        }
+
+        // Claude is non-interactive for both commands; close stdin immediately so it can never
+        // wait for input from the menu-bar process.
+        try? input.fileHandleForWriting.close()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        if process.isRunning { process.waitUntilExit() }
+
+        if Date() >= deadline { throw UsageClientError.timedOut }
+        // `claude auth status --json` exits 1 when signed out while still returning its valid JSON
+        // object. A nonzero status therefore cannot by itself make structured stdout unusable; the
+        // narrow decoders decide whether nonempty output satisfies their contract.
+        guard !data.isEmpty else { throw UsageClientError.unusableOutput }
+        return data
+    }
+
+    private static func claudeExecutable() -> URL? {
+        let source = ProcessInfo.processInfo.environment
+        let home = homePath(source: source)
+        var candidates: [String] = []
+        if let override = source["CLAUDE_BIN"], !override.isEmpty { candidates.append(override) }
+        candidates += fixedDiscoveryDirectories(home: home).map { "\($0)/claude" }
+        for directory in pathDirectories(source["PATH"]) {
+            candidates.append("\(directory)/claude")
+        }
+
+        guard let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            return nil
+        }
+        return URL(fileURLWithPath: path)
+    }
+
+    private static func claudeEnvironment() -> [String: String] {
+        let source = ProcessInfo.processInfo.environment
+        var environment: [String: String] = [:]
+        // Do not forward arbitrary API keys or unrelated process secrets into the child.
+        let allowedKeys = [
+            "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE",
+            "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+            "SSL_CERT_FILE", "SSL_CERT_DIR",
+        ]
+        for key in allowedKeys {
+            if let value = source[key] { environment[key] = value }
+        }
+
+        let home = homePath(source: source)
+        environment["HOME"] = source["HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? home
+        environment["TMPDIR"] = source["TMPDIR"].flatMap { $0.isEmpty ? nil : $0 } ?? NSTemporaryDirectory()
+
+        var directories = fixedDiscoveryDirectories(home: home)
+        directories += pathDirectories(source["PATH"])
+        directories += ["/usr/bin", "/bin"]
+        environment["PATH"] = unique(directories).joined(separator: ":")
+        environment["NO_COLOR"] = "1"
+        return environment
+    }
+
+    private static func fixedDiscoveryDirectories(home: String) -> [String] {
+        [
+            "\(home)/.local/bin",
+            "\(home)/.npm-global/bin",
+            "\(home)/.bun/bin",
+            "\(home)/.volta/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+        ]
+    }
+
+    private static func pathDirectories(_ path: String?) -> [String] {
+        (path ?? "").split(separator: ":").map(String.init).filter { !$0.isEmpty }
+    }
+
+    private static func homePath(source: [String: String]) -> String {
+        if let value = source["HOME"], !value.isEmpty { return value }
+        if let password = getpwuid(getuid()), let directory = password.pointee.pw_dir {
+            return String(cString: directory)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.path
+    }
+
+    private static func unique(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0).inserted }
     }
 }

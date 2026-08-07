@@ -13,7 +13,7 @@ help: ## Show this help
 check: ## Run data-layer checks against fixtures (no Xcode needed)
 	swift run DataLayerCheck
 
-live: ## Show a live snapshot: Keychain → endpoint → parsed (no Xcode needed)
+live: ## Show a live snapshot: claude CLI → parsed (no Xcode needed)
 	swift run DataLayerCheck --live
 
 install: ## Configure, build, install to /Applications, and launch (one command)
