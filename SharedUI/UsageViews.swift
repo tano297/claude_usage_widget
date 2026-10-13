@@ -54,14 +54,14 @@ struct LimitRow: View {
                 if bar.severity.showsWarningGlyph {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9))
-                        .foregroundStyle(bar.severity.color)
+                        .foregroundStyle(usagePercentColor(bar.percent))
                 }
                 Text(percentString(bar.percent))
                     .font(.system(size: compact ? 11 : 12, weight: .semibold))
-                    .foregroundStyle(bar.severity.color)
+                    .foregroundStyle(usagePercentColor(bar.percent))
                     .monospacedDigit()
             }
-            ProgressBarView(fraction: bar.percent / 100, color: bar.severity.color)
+            ProgressBarView(fraction: bar.percent / 100, color: usagePercentColor(bar.percent))
                 .frame(height: compact ? 5 : 6)
             if showReset, let reset = bar.resetsAt {
                 Text("resets in \(countdownString(to: reset, from: now))")
@@ -134,16 +134,43 @@ struct FreshnessRow: View {
     }
 }
 
+/// Age of one roster reading: "Updated 12 sec ago" or "Stale · 3 min ago".
+/// A plain string, not `Text(date, style: .relative)`. Several live relative dates in one widget
+/// make the desktop snapshot render black.
+struct ReadingAge: View {
+    let fetchedAt: Date?
+    var now: Date
+    var stale: Bool = false
+    var font: Font = .system(size: 10)
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(stale ? Color.orange : Color.green)
+                .frame(width: 5, height: 5)
+            Text(label)
+                .font(font)
+                .foregroundStyle(stale ? Color.orange : Color.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private var label: String {
+        guard let fetchedAt else { return "—" }
+        let age = readingAgeString(from: fetchedAt, to: now)
+        return stale ? "Stale · \(age)" : "Updated \(age)"
+    }
+}
+
 /// A percentage ring for the small widget.
 struct UsageRing: View {
     let percent: Double
-    let severity: Severity
     var body: some View {
         ZStack {
             Circle().stroke(Color.primary.opacity(0.12), lineWidth: 7)
             Circle()
                 .trim(from: 0, to: min(1, percent / 100))
-                .stroke(severity.color, style: StrokeStyle(lineWidth: 7, lineCap: .round))
+                .stroke(usagePercentColor(percent), style: StrokeStyle(lineWidth: 7, lineCap: .round))
                 .rotationEffect(.degrees(-90))
             Text(percentString(percent))
                 .font(.system(size: 15, weight: .bold))

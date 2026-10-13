@@ -1,0 +1,9 @@
+{
+  "five_hour": { "utilization": 4.2, "resets_at": "2026-10-13T22:00:00.000000Z" },
+  "seven_day": { "utilization": 89, "resets_at": "2026-10-16T03:00:00.000000Z" },
+  "limits": [
+    { "kind": "session", "percent": 12, "severity": "normal", "resets_at": "2026-10-13T22:00:00Z" },
+    { "kind": "weekly_all", "percent": 40, "severity": "warning", "resets_at": "2026-10-16T03:00:00Z" },
+    { "kind": "weekly_scoped", "percent": 7, "resets_at": "2026-10-16T03:00:00Z" }
+  ]
+}

@@ -335,8 +335,9 @@ public enum CreditsClient {
 }
 
 /// Keep the bearer request pinned to the one documented-in-code host/path. Redirects are surfaced
-/// as ordinary non-200 responses instead of forwarding the credential to another URL.
-private final class NoRedirectSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+/// as ordinary non-200 responses instead of forwarding the credential to another URL. The roster
+/// requests use it too.
+final class NoRedirectSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     static let shared = NoRedirectSessionDelegate()
 
     func urlSession(_ session: URLSession,

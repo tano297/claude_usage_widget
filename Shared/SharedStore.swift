@@ -51,3 +51,9 @@ public enum SharedStore {
         return try? makeDecoder().decode(UsageSnapshot.self, from: data)
     }
 }
+
+/// Widget kinds, so the agent can reload one widget without the other.
+public enum WidgetKind {
+    public static let current = "ClaudeUsageWidget"
+    public static let accounts = "ClaudeAccountsWidget"
+}

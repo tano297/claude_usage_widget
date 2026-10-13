@@ -39,6 +39,28 @@ public func countdownString(to date: Date, from now: Date) -> String {
     return "\(mins)m"
 }
 
+/// How old a reading is: "12 sec ago", "3 min ago", or "1 hr 5 min ago".
+public func readingAgeString(from fetchedAt: Date, to now: Date) -> String {
+    let secs = max(0, Int(now.timeIntervalSince(fetchedAt)))
+    if secs < 60 { return "\(secs) sec ago" }
+    let mins = secs / 60
+    if mins < 60 { return "\(mins) min ago" }
+    let hours = mins / 60
+    let rem = mins % 60
+    if rem == 0 { return "\(hours) hr ago" }
+    return "\(hours) hr \(rem) min ago"
+}
+
+/// Time left in the 5-hour window. Hours and minutes only, so 27 hours stays "27h 0m".
+public func hourMinuteString(to date: Date, from now: Date) -> String {
+    let secs = Int(date.timeIntervalSince(now))
+    if secs <= 0 { return "now" }
+    let hours = secs / 3600
+    let mins = (secs % 3600) / 60
+    if hours > 0 { return "\(hours)h \(mins)m" }
+    return "\(mins)m"
+}
+
 // MARK: - Numbers & money
 
 public func percentString(_ p: Double) -> String {
