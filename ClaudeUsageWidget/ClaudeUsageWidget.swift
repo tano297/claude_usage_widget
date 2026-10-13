@@ -5,19 +5,20 @@ import SwiftUI
 struct ClaudeUsageWidgetBundle: WidgetBundle {
     var body: some Widget {
         ClaudeUsageWidget()
+        ClaudeAccountsWidget()
     }
 }
 
 struct ClaudeUsageWidget: Widget {
-    let kind = "ClaudeUsageWidget"
+    let kind = WidgetKind.current
 
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: UsageProvider()) { entry in
             UsageWidgetView(entry: entry)
                 .containerBackground(.background, for: .widget)
         }
-        .configurationDisplayName("Claude Usage")
-        .description("Session and weekly usage limits for your Claude plan.")
+        .configurationDisplayName("Current sub")
+        .description("The account signed in to Claude Code.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }

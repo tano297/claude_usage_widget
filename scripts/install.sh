@@ -88,23 +88,42 @@ fi
 APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" -maxdepth 5 -name ClaudeUsage.app \
         -path "*/Build/Products/Debug/*" 2>/dev/null | head -1)
 [ -n "$APP" ] || die "Could not locate the built ClaudeUsage.app."
+DERIVED_APPEX="$APP/Contents/PlugIns/ClaudeUsageWidget.appex"
+INSTALLED_APPEX="/Applications/ClaudeUsage.app/Contents/PlugIns/ClaudeUsageWidget.appex"
 say "Installing to /Applications…"
+# The widget process keeps the previous binary mapped if only the menu-bar app is killed.
 pkill -f "/Applications/ClaudeUsage.app/Contents/MacOS/ClaudeUsage" 2>/dev/null || true
+pkill -f "/Applications/ClaudeUsage.app/Contents/PlugIns/ClaudeUsageWidget.appex" 2>/dev/null || true
 sleep 1
 rm -rf /Applications/ClaudeUsage.app
 cp -R "$APP" /Applications/ClaudeUsage.app
+
+# xcodebuild also registers the DerivedData copy and elects this extension for the debugger.
+# chronod then hides both widgets and drops the ones already on the desktop.
+# These are best effort: the app is already in place, so a pluginkit miss must not stop the launch.
+[ -d "$DERIVED_APPEX" ] && pluginkit -r "$DERIVED_APPEX" 2>/dev/null || true
+pluginkit -a "$INSTALLED_APPEX" 2>/dev/null || true
+pluginkit -e use -i com.claudeusage.app.ClaudeUsageWidget 2>/dev/null || true
 LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 [ -x "$LSREG" ] && "$LSREG" -f /Applications/ClaudeUsage.app 2>/dev/null || true
+pluginkit -e use -i com.claudeusage.app.ClaudeUsageWidget 2>/dev/null || true
 
-# 8) Launch
+# 8) Launch. chronod keeps the previous widget list until it is restarted.
+say "Refreshing widgets (restarts chronod, the macOS widget service; it comes back on its own)…"
+killall chronod 2>/dev/null || true
+sleep 1
 say "Launching…"
 open /Applications/ClaudeUsage.app
+sleep 1
+pluginkit -e use -i com.claudeusage.app.ClaudeUsageWidget 2>/dev/null || true
+pluginkit -m -i com.claudeusage.app.ClaudeUsageWidget || true
 
 cat <<'EOF'
 
-✓ Installed.  Finish up:
-  1. No Keychain access is needed; Claude Code handles its own authentication.
-  2. Open Notification Center (swipe left from the right edge, or click the clock)
-     → scroll down → Edit Widgets → add "Claude Usage" (Medium).
-  3. Launch at login is enabled automatically on first run and can be changed from the menu bar.
+✓ Installed. Add the widgets from the desktop:
+  1. Right-click the desktop and choose Edit Widgets.
+  2. Search for Claude Usage.
+  3. Add Current sub (small or medium).
+  4. Add All subs (large) and place it under Current sub.
+Launch at login is enabled automatically on first run and can be changed from the menu bar.
 EOF

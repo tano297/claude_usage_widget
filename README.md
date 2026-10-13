@@ -27,8 +27,8 @@ Clone the repo, open **Claude Code** in the repo folder, and paste this prompt:
 
 ```text
 Install this macOS "Claude Usage" widget for me from this repo.
-1. Read README.md and SECURITY.md, then tell me in 2 lines how the primary CLI usage fetch and the
-   optional, in-memory usage-credits fetch handle authentication.
+1. Read README.md and SECURITY.md, then tell me in 2 lines how the primary CLI usage fetch, the
+   optional in-memory usage-credits fetch, and any extra-subscription sign-in handle authentication.
 2. Check my prerequisites: macOS; Claude Code installed and signed in via `claude`; Xcode.app;
    Homebrew; and Xcode signed in with an Apple ID for a free Personal Team.
 3. Install anything missing that is safe to install non-interactively (e.g. `brew install xcodegen`).
@@ -50,9 +50,11 @@ Prefer to drive it yourself? Jump to [Manual install](#manual-install).
   remains available; this supplement auto-disables if access could start prompting.
 - **Plan labels** from Claude Code (`Max`, `Pro`, `Team`, `Free`, or `Enterprise`). The CLI output
   does not expose Max's 5×/20× tier, so the widget intentionally shows simply `Max`.
-- Anthropic-clay identity color (`#D97757`) with warmer severity escalation as a limit fills.
+- Anthropic-clay titles (`#D97757`). A limit shows green under 34%, orange to 66%, and red from 67%.
 - **Tap-to-refresh (↻)** plus a live **Updated … ago** freshness indicator.
 - A companion menu-bar readout, refresh button, notifications, and launch-at-login control.
+- **Other subscriptions** — a separate large widget titled All subs, after you sign them in
+  from Open. The menu bar and the Current sub widget stay on the signed-in account.
 - Runs locally with no project server or telemetry. The supplemental token is held in memory only
   for its direct Anthropic usage request and is never logged or persisted.
 
@@ -70,13 +72,19 @@ ClaudeUsage.app (non-sandboxed menu-bar agent)
         │               ▼
         │      whitelist three usage-bar line forms
         │
-        └─► optional: /usr/bin/security (4 s deadline)
-                    │ in-memory bearer token only
-                    └─► GET api.anthropic.com/api/oauth/usage
-                              whitelist spend fields only
+        ├─► optional: /usr/bin/security (4 s deadline)
+        │           in-memory bearer token only
+        │           GET api.anthropic.com/api/oauth/usage
+        │           whitelist spend fields only
+        │
+        └─► other subscriptions (separate sign-in)
+                    refresh token in the Keychain only
+                    GET api.anthropic.com/api/oauth/usage
                         │
                         ▼
-~/Library/Application Support/ClaudeUsage/usage.json
+~/Library/Application Support/ClaudeUsage/
+        usage.json     the Claude Code account
+        roster.json    emails and meters, no tokens
                        ▲  read-only sandbox path exception
                        │
 ClaudeUsageWidget (sandboxed WidgetKit extension) → renders in Notification Center
@@ -90,8 +98,42 @@ is never written to the snapshot.
 Credits are a separate supplement. Their failure cannot make the CLI snapshot stale, change its
 error, or prevent bars and email from being saved.
 
-The widget reads one JSON file through a read-only sandbox path exception. This deliberately avoids
-App Groups, which require a registered group identifier; local personal-team signing is sufficient.
+The widget reads those JSON files through a read-only sandbox path exception. This deliberately
+avoids App Groups, which require a registered group identifier; local personal-team signing is
+sufficient. The widget has no network access and does not read the Keychain.
+
+## Other subscriptions
+
+Open in the menu signs in subscriptions besides the Claude Code account. Each **Add account** opens
+a private Chrome window. To use the saved logins of a Chrome profile instead, pick that profile in
+the Subscriptions window. Log into one account, then add the next. If Chrome is not installed, the
+default browser opens.
+
+The menu bar and the **Current sub** widget stay on the account signed in to `claude`. Extra
+subscriptions are a second widget, **All subs**. In Edit Widgets, search for Claude Usage.
+Current sub is the small and medium sizes. All subs is the large size. Place All subs under
+Current sub.
+
+Accounts are ordered by the weekly reset, soonest first. Each account shows the 5-hour percent
+and the hours and minutes left, then the weekly percent, the time left, and the weekday and clock.
+The same line as the email shows how old that reading is, in seconds or minutes.
+A divider separates accounts. Signing in the `claude` account there shows it in both places.
+
+Refresh tokens stay in the Keychain, service `com.claudeusage.app.roster`. `roster.json` stores the
+email and the two meters. See [SECURITY.md](SECURITY.md). Sign-in follows the browser flow in
+[Usage4Claude](https://github.com/f-is-h/Usage4Claude) (MIT). This app does not send inference as
+those accounts.
+
+**Before you use it:** this app has no OAuth client of its own, so sign-in uses Claude Code's public
+OAuth client ID, and the consent page names Claude Code. Anthropic's
+[Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance) page says OAuth
+authentication "is designed to support ordinary use of Claude Code and other native Anthropic
+applications", that "Anthropic does not permit third-party developers to offer Claude.ai login into
+their own applications", and that developers "may not collect, store, or intermediate Claude.ai
+credentials or session tokens". This feature signs in through Anthropic's own page but stores a
+refresh token. Anthropic "reserves the right to take measures to enforce these restrictions and may
+do so without prior notice". Read that page and decide for yourself. The feature is optional: the Claude Code account, the menu bar, and the
+Current sub widget work without it.
 
 ## Requirements
 
@@ -111,9 +153,10 @@ sign-in (Settings ▸ Accounts) for a free Personal Team. From the repo root:
 # ./scripts/install.sh <TEAM_ID> # if auto-detect cannot find your team
 ```
 
-The credits read is promptless with Claude Code's current Keychain ACL. Open **Notification Center**
-→ **Edit Widgets** → add **Claude Usage** (medium). Launch at login is enabled automatically on first
-run and can be changed from the menu-bar gauge.
+The credits read is promptless with Claude Code's current Keychain ACL. Right-click the desktop →
+**Edit Widgets** → search for Claude Usage → add **Current sub** (small or medium), and **All subs**
+(large) if you use extra subscriptions. Launch at login is enabled automatically on first run and can
+be changed from the menu-bar gauge.
 
 <details>
 <summary>Prefer to run the steps yourself</summary>
@@ -197,7 +240,7 @@ unsafe. The snapshot directory is mode `0700`, and `usage.json` is mode `0600`. 
 
 ## Roadmap
 
-- `systemSmall` polish and optional multi-account support.
+- `systemSmall` polish.
 - A signed, notarized release build so friends can install without Xcode.
 
 ## License

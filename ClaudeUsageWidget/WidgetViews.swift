@@ -21,7 +21,7 @@ struct MediumUsageView: View {
         VStack(alignment: .leading, spacing: 5) {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Text("Claude").font(.system(size: 13, weight: .bold)).foregroundStyle(ClaudeTheme.clay)
+                    Text("Current sub").font(.system(size: 13, weight: .bold)).foregroundStyle(ClaudeTheme.clay)
                     Text(s.planLabel).font(.system(size: 12)).foregroundStyle(.secondary)
                     Spacer()
                     Button(intent: RefreshUsageIntent()) {
@@ -79,9 +79,14 @@ struct SmallUsageView: View {
 
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
-                Text(s.planLabel)
+                Text("Current sub")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(ClaudeTheme.clay)
+                    .lineLimit(1)
+                Text(s.planLabel)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Spacer()
                 Button(intent: RefreshUsageIntent()) {
                     Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .semibold))
@@ -90,7 +95,7 @@ struct SmallUsageView: View {
                 .foregroundStyle(.secondary)
             }
             if let top {
-                UsageRing(percent: top.1.percent, severity: top.1.severity)
+                UsageRing(percent: top.1.percent)
                     .frame(width: 58, height: 58)
                     .frame(maxWidth: .infinity, alignment: .center)
                 Text("\(top.0) · \(top.1.resetsAt.map { countdownString(to: $0, from: entry.date) } ?? "—")")

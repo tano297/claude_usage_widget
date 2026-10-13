@@ -9,19 +9,34 @@ import ServiceManagement
 
 @main
 struct ClaudeUsageApp: App {
-    @StateObject private var agent = UsageAgent()
+    @StateObject private var roster: RosterController
+    @StateObject private var agent: UsageAgent
+
+    init() {
+        // Before the first roster read: a Keychain miss must fail quietly, never show a dialog.
+        RosterSessionStore.disableKeychainDialogs()
+        let roster = RosterController()
+        _roster = StateObject(wrappedValue: roster)
+        _agent = StateObject(wrappedValue: UsageAgent(roster: roster))
+    }
 
     var body: some Scene {
         MenuBarExtra {
             MenuContent(agent: agent, creditsGate: agent.creditsGate)
         } label: {
-            // Compact readout: every active limit, labeled ("S0 W27 F45").
+            // The signed-in Claude Code account only. Extra subscriptions live in the Claude Accounts widget.
             HStack(spacing: 3) {
                 Image(systemName: "gauge.medium")
                 Text(agent.menuBarText).monospacedDigit()
             }
         }
         .menuBarExtraStyle(.window)
+
+        Window("Subscriptions", id: "accounts") {
+            AccountsWindow(roster: roster)
+        }
+        .defaultSize(width: 480, height: 420)
+        .windowResizability(.contentMinSize)
     }
 }
 
@@ -30,6 +45,8 @@ final class UsageAgent: ObservableObject {
     @Published private(set) var snapshot: UsageSnapshot?
     @Published private(set) var isRefreshing = false
     let creditsGate = UserDefaultsCreditsFetchGate()
+    /// Extra subscriptions. Refreshed after the CLI snapshot is saved. Its errors do not touch that snapshot.
+    let roster: RosterController
 
     /// Fixed cadence. WidgetKit also self-refreshes countdowns between writes.
     let refreshInterval: TimeInterval = 180
@@ -39,7 +56,8 @@ final class UsageAgent: ObservableObject {
     private var lastFetchAt = Date.distantPast
     private let minFetchInterval: TimeInterval = 20
 
-    init() {
+    init(roster: RosterController) {
+        self.roster = roster
         snapshot = SharedStore.load()
         // Bulletproof launch: enable the login item on first run so the agent (and thus the widget)
         // stays live across reboots. Only once — if you later turn it off in the menu, that sticks.
@@ -80,8 +98,13 @@ final class UsageAgent: ObservableObject {
         try? SharedStore.save(snap)
         snapshot = snap
         notifyThresholds(for: snap)
+        // Repaint Current sub now. The roster reads each account over the network and must not
+        // hold this snapshot back.
+        WidgetCenter.shared.reloadTimelines(ofKind: WidgetKind.current)
+        // The roster is a second pipeline. A miss must not mark this snapshot stale or change its error.
+        await roster.refresh()
         isRefreshing = false
-        WidgetCenter.shared.reloadAllTimelines()
+        WidgetCenter.shared.reloadTimelines(ofKind: WidgetKind.accounts)
     }
 
     // MARK: Threshold notifications
@@ -163,6 +186,7 @@ final class UserDefaultsCreditsFetchGate: ObservableObject, CreditsFetchGate {
 struct MenuContent: View {
     @ObservedObject var agent: UsageAgent
     @ObservedObject var creditsGate: UserDefaultsCreditsFetchGate
+    @Environment(\.openWindow) private var openWindow
     @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
     @State private var loginItemNote: String?
     @State private var notifyEnabled = UsageAgent.notificationsEnabled
@@ -265,6 +289,9 @@ struct MenuContent: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack {
+                Button("Open") { openAccounts() }
+                    .help("Sign in to more subscriptions")
+                Spacer()
                 Button {
                     Task { await agent.refresh() }
                 } label: {
@@ -284,6 +311,13 @@ struct MenuContent: View {
             refreshNotifyNote()
             Task { await agent.refresh() }   // force a fresh reading whenever you open the menu
         }
+    }
+
+    private func openAccounts() {
+        AccountsWindowLaunch.requested = true
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate()
+        openWindow(id: "accounts")
     }
 
     /// Surface a settings hint when the toggle is on but macOS-level permission is denied.

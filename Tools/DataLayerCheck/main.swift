@@ -424,6 +424,85 @@ eq(customNoData.error, "Fixture-safe error", "noData accepts fixed client error"
 check(!UsageSnapshot.placeholder(now: now).stale, "placeholder is preview-only fresh data")
 eq(UsageSnapshot.placeholder(now: now).email, "user@example.com", "preview email is invented")
 
+print("roster usage:")
+let rosterNow = parseISODate("2026-10-13T18:00:00Z")!
+let rosterParsed = try! RosterUsageParser.parse(fixture("roster_usage"))
+eq(rosterParsed.fiveHour?.percent, 12, "limits session wins over five_hour")
+eq(rosterParsed.week?.percent, 40, "limits weekly_all wins over seven_day")
+eq(rosterParsed.fiveHour?.severity, .normal, "session severity from the payload")
+eq(rosterParsed.week?.resetsAt, parseISODate("2026-10-16T03:00:00Z"), "weekly reset instant")
+let legacy = try! RosterUsageParser.parse(fixture("roster_usage_legacy"))
+eq(legacy.fiveHour?.percent, 15, "legacy five_hour utilization")
+eq(legacy.week?.percent, 60.4, "legacy seven_day utilization")
+check((try? RosterUsageParser.parse(fixture("roster_usage_empty"))) == nil, "empty payload is not a fake zero")
+check((try? RosterUsageParser.parse(Data("not json".utf8))) == nil, "non-json usage is unreadable")
+
+let clockZone = TimeZone(secondsFromGMT: 0)!
+let clockLocale = Locale(identifier: "en_US")
+eq(resetClockString(parseISODate("2026-10-16T03:00:00Z")!, locale: clockLocale, timeZone: clockZone),
+   "Fri 3:00 AM",
+   "reset clock is weekday and time")
+eq(rosterShortName("longlocalpart@example.com"), "longlocalpar", "short name is the local part, capped")
+eq(rosterShortName("ada.297@example.com"), "ada.297", "short local part stays whole")
+eq(rosterMeter(nil, now: rosterNow), "—", "missing window is an em dash")
+eq(rosterMeter(LimitBar(percent: 4.2, resetsAt: parseISODate("2026-10-13T22:00:00Z"), severity: .normal),
+               now: rosterNow),
+   "4% 4h 0m",
+   "meter is rounded percent and countdown")
+
+let sampleAccounts = [
+    RosterAccount(email: "ada.297@example.com",
+                  fiveHour: LimitBar(percent: 4, resetsAt: rosterNow.addingTimeInterval(4 * 3600), severity: .normal),
+                  week: LimitBar(percent: 89, resetsAt: rosterNow.addingTimeInterval(3 * 86_400 + 4 * 3600), severity: .warning)),
+    RosterAccount(email: "other@example.com",
+                  fiveHour: nil,
+                  week: LimitBar(percent: 10, resetsAt: nil, severity: .normal))
+]
+eq(rosterStatusText(sampleAccounts, now: rosterNow),
+   "ada.297 4% 4h 0m · 89% 3d 4h  other — · 10% —",
+   "menu bar chip per account")
+eq(rosterStatusText([], now: rosterNow), "", "empty roster has no menu bar text")
+eq(hourMinuteString(to: rosterNow.addingTimeInterval(4 * 3600 + 60), from: rosterNow),
+   "4h 1m",
+   "5-hour reset is hours and minutes")
+eq(hourMinuteString(to: rosterNow.addingTimeInterval(27 * 3600 + 5 * 60), from: rosterNow),
+   "27h 5m",
+   "5-hour reset does not roll into days")
+eq(hourMinuteString(to: rosterNow.addingTimeInterval(45 * 60), from: rosterNow),
+   "45m",
+   "5-hour reset under an hour is minutes")
+eq(readingAgeString(from: rosterNow.addingTimeInterval(-12), to: rosterNow),
+   "12 sec ago",
+   "a fresh reading is seconds")
+eq(readingAgeString(from: rosterNow.addingTimeInterval(-3 * 60), to: rosterNow),
+   "3 min ago",
+   "an older reading is minutes")
+eq(readingAgeString(from: rosterNow.addingTimeInterval(-(60 * 60 + 5 * 60)), to: rosterNow),
+   "1 hr 5 min ago",
+   "a reading past an hour keeps the minutes")
+let soon = RosterAccount(email: "soon@example.com",
+                         week: LimitBar(percent: 10, resetsAt: rosterNow.addingTimeInterval(2 * 3600), severity: .normal))
+let later = RosterAccount(email: "later@example.com",
+                          week: LimitBar(percent: 20, resetsAt: rosterNow.addingTimeInterval(2 * 86_400), severity: .normal))
+let unknown = RosterAccount(email: "unknown@example.com",
+                            week: LimitBar(percent: 30, resetsAt: nil, severity: .normal))
+eq(rosterByWeeklyReset([later, unknown, soon]).map(\.email),
+   ["soon@example.com", "later@example.com", "unknown@example.com"],
+   "weekly reset soonest first, missing reset last")
+
+let rosterDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    .appendingPathComponent("claude-usage-roster-\(UUID().uuidString)", isDirectory: true)
+RosterStore.directoryOverride = rosterDir
+defer { RosterStore.directoryOverride = nil }
+let stored = RosterSnapshot(accounts: sampleAccounts)
+try! RosterStore.save(stored)
+let loaded = RosterStore.load()
+eq(loaded, stored, "roster round trip")
+let rawRoster = String(data: try! Data(contentsOf: RosterStore.fileURL()), encoding: .utf8)!
+check(!rawRoster.contains("sk-ant"), "roster file has no session material")
+check(rawRoster.contains("ada.297@example.com"), "roster file keeps the email")
+try? FileManager.default.removeItem(at: rosterDir)
+
 print(String(repeating: "-", count: 40))
 if failures == 0 {
     print("ALL CHECKS PASSED")
