@@ -2,10 +2,14 @@ import Foundation
 import Security
 
 /// Refresh tokens for roster accounts. The widget never links this file. `roster.json` does not.
-enum RosterTokenLoad {
-    case token(String)
-    case missing
-    case unavailable
+/// `RosterTokenLoad` and `RosterTokenStore` are in RosterSync.swift.
+
+/// The Keychain behind `RosterSync`.
+struct KeychainRosterTokenStore: RosterTokenStore {
+    func load(id: UUID) -> RosterTokenLoad { RosterSessionStore.load(id: id) }
+    func save(id: UUID, email: String, refreshToken: String) -> Bool {
+        RosterSessionStore.save(id: id, email: email, refreshToken: refreshToken)
+    }
 }
 
 enum RosterSessionStore {
@@ -51,16 +55,19 @@ enum RosterSessionStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: id.uuidString,
             kSecReturnData as String: true,
+            kSecReturnAttributes as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return .missing }
         guard status == errSecSuccess,
-              let data = item as? Data,
+              let attributes = item as? [String: Any],
+              let data = attributes[kSecValueData as String] as? Data,
               let token = String(data: data, encoding: .utf8),
               !token.isEmpty else { return .unavailable }
-        return .token(token)
+        // The item's modification time: when this refresh token was saved. Only its age is logged.
+        return .token(token, savedAt: attributes[kSecAttrModificationDate as String] as? Date)
     }
 
     static func delete(id: UUID) {

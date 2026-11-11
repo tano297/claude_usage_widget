@@ -56,6 +56,12 @@ struct AccountsWindow: View {
                             Text(error)
                                 .font(.caption)
                                 .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if account.signedOut == true, let fetchedAt = account.fetchedAt {
+                            Text("Last worked \(resetClockString(fetchedAt))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                     Spacer(minLength: 8)

@@ -12,6 +12,10 @@ public struct RosterAccount: Codable, Sendable, Equatable, Identifiable {
     public var fetchedAt: Date?
     public var stale: Bool
     public var error: String?
+    /// True after the token endpoint refused this account's saved sign-in for good (`invalid_grant`
+    /// or 401). The agent then stops refreshing it until a new sign-in for the account clears it.
+    /// Absent (nil) in files written before this field existed, and omitted while nil.
+    public var signedOut: Bool?
 
     public init(id: UUID = UUID(),
                 email: String,
@@ -19,7 +23,8 @@ public struct RosterAccount: Codable, Sendable, Equatable, Identifiable {
                 week: LimitBar? = nil,
                 fetchedAt: Date? = nil,
                 stale: Bool = false,
-                error: String? = nil) {
+                error: String? = nil,
+                signedOut: Bool? = nil) {
         self.id = id
         self.email = email
         self.fiveHour = fiveHour
@@ -27,6 +32,7 @@ public struct RosterAccount: Codable, Sendable, Equatable, Identifiable {
         self.fetchedAt = fetchedAt
         self.stale = stale
         self.error = error
+        self.signedOut = signedOut
     }
 }
 
