@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - Narrow endpoint shapes
 
@@ -124,6 +125,8 @@ public enum CreditsDisableReason: String, Sendable, Equatable {
 public enum CreditsFetchEvent: Sendable, Equatable {
     case response(CreditsSpend)
     case httpStatus(Int)
+    /// HTTP 429, with the server's Retry-After in seconds when it sent one.
+    case throttled(retryAfter: TimeInterval?)
     case credentialFailure(CreditsCredentialFailure)
     case transportFailure
     case malformedResponse
@@ -133,6 +136,8 @@ public enum CreditsFetchDecision: Sendable, Equatable {
     case show(CreditsInfo)
     case hide
     case disable(CreditsDisableReason)
+    /// Keep the last good value and skip the endpoint until the back-off ends.
+    case backOff(retryAfter: TimeInterval?)
 }
 
 public enum CreditsOutcomeMapper {
@@ -146,6 +151,8 @@ public enum CreditsOutcomeMapper {
             return spend.enabled ? .show(spend.creditsInfo) : .hide
         case .httpStatus(403):
             return .disable(.forbidden)
+        case .throttled(let retryAfter):
+            return .backOff(retryAfter: retryAfter)
         case .credentialFailure(.promptSuspected):
             // A prompt-tainted success is discarded like a failure: the user already answered one
             // dialog, and the breaker is what stops every future poll from asking again.
@@ -155,6 +162,64 @@ public enum CreditsOutcomeMapper {
         case .httpStatus, .transportFailure, .malformedResponse:
             return .hide
         }
+    }
+}
+
+// MARK: - Rate-limit back-off
+
+/// When the credits endpoint answers 429, no credits request (and no Keychain read) happens until
+/// this says so. Retry-After wins when the server sends it (capped at `maxRetryAfter`); otherwise
+/// the wait doubles from `initialDelay` up to `maxDelay`. A 200 resets it. In memory only.
+public final class CreditsBackoff: @unchecked Sendable {
+    public static let initialDelay: TimeInterval = 5 * 60
+    public static let maxDelay: TimeInterval = 60 * 60
+    public static let maxRetryAfter: TimeInterval = 6 * 60 * 60
+
+    private let lock = NSLock()
+    private var strikes = 0
+    private var until: Date?
+
+    public init() {}
+
+    /// The time before which no request is made. Nil when requests are allowed.
+    public var notBefore: Date? {
+        lock.lock(); defer { lock.unlock() }
+        return until
+    }
+
+    public func allows(at now: Date) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let until else { return true }
+        return now >= until
+    }
+
+    /// Records one 429 and returns the wait it chose.
+    @discardableResult
+    public func recordThrottle(retryAfter: TimeInterval?, at now: Date) -> TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        strikes += 1
+        let doubling = min(Self.maxDelay, Self.initialDelay * pow(2, Double(min(strikes - 1, 16))))
+        let delay = retryAfter.map { min(max($0, 0), Self.maxRetryAfter) } ?? doubling
+        until = now.addingTimeInterval(delay)
+        return delay
+    }
+
+    public func reset() {
+        lock.lock(); defer { lock.unlock() }
+        strikes = 0
+        until = nil
+    }
+
+    /// Retry-After as seconds, or as an HTTP date. Nil when absent or unreadable.
+    public static func parseRetryAfter(_ value: String?, now: Date) -> TimeInterval? {
+        guard let raw = value?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return nil }
+        if let seconds = TimeInterval(raw), seconds >= 0 { return seconds }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        guard let date = formatter.date(from: raw) else { return nil }
+        return max(0, date.timeIntervalSince(now))
     }
 }
 
@@ -184,46 +249,70 @@ public enum CreditsClient {
 
     /// Best-effort only: every failure returns nil, and only explicit breaker decisions mutate the
     /// injected gate. The primary Claude CLI snapshot is never read or changed here.
-    public static func fetchCredits(gate: any CreditsFetchGate) async -> CreditsInfo? {
+    ///
+    /// With a `backoff`, an HTTP 429 starts a wait. Until it ends no Keychain read and no request
+    /// happen, and `previous` (the last good value) is returned. `readCredential` and `session` are
+    /// for checks only; the app leaves them nil.
+    public static func fetchCredits(gate: any CreditsFetchGate,
+                                    backoff: CreditsBackoff? = nil,
+                                    previous: CreditsInfo? = nil,
+                                    now: @escaping @Sendable () -> Date = { Date() },
+                                    readCredential: (@Sendable () throws -> Data)? = nil,
+                                    session: URLSession? = nil) async -> CreditsInfo? {
         guard await gate.isEnabled else { return nil }
+        if let backoff, !backoff.allows(at: now()) { return previous }
 
         let event: CreditsFetchEvent
         do {
             // Security boundary: the token remains a local value for this one request. It is never
             // attached to an error, returned in an outcome, logged, or persisted.
-            let credentialData = try readCredentialData()
+            let credentialData = try (readCredential ?? readCredentialData)()
             let accessToken: String
             do {
                 accessToken = try CreditsParser.parseAccessToken(credentialData)
             } catch {
                 event = .credentialFailure(.malformedOutput)
-                return await apply(CreditsOutcomeMapper.decision(for: event), to: gate)
+                return await apply(CreditsOutcomeMapper.decision(for: event), to: gate,
+                                   backoff: backoff, previous: previous, now: now())
             }
-            event = await requestSpend(accessToken: accessToken)
+            event = await requestSpend(accessToken: accessToken, session: session, now: now())
         } catch let failure as CreditsCredentialFailure {
             event = .credentialFailure(failure)
         } catch {
             event = .credentialFailure(.launchFailed)
         }
 
-        return await apply(CreditsOutcomeMapper.decision(for: event), to: gate)
+        return await apply(CreditsOutcomeMapper.decision(for: event), to: gate,
+                           backoff: backoff, previous: previous, now: now())
     }
+
+    private static let logger = Logger(subsystem: "com.claudeusage.app", category: "credits")
 
     @MainActor
     private static func apply(_ decision: CreditsFetchDecision,
-                              to gate: any CreditsFetchGate) -> CreditsInfo? {
+                              to gate: any CreditsFetchGate,
+                              backoff: CreditsBackoff?,
+                              previous: CreditsInfo?,
+                              now: Date) -> CreditsInfo? {
         switch decision {
         case .show(let credits):
+            backoff?.reset()
             return gate.isEnabled ? credits : nil
         case .hide:
             return nil
         case .disable(let reason):
             gate.disable(reason: reason)
             return nil
+        case .backOff(let retryAfter):
+            guard let backoff else { return nil }
+            let wait = backoff.recordThrottle(retryAfter: retryAfter, at: now)
+            let header = retryAfter.map { String(Int($0)) } ?? "none"
+            logger.log("credits status=429 retryAfter=\(header, privacy: .public) wait=\(Int(wait), privacy: .public)s")
+            return gate.isEnabled ? previous : nil
         }
     }
 
-    private static func requestSpend(accessToken: String) async -> CreditsFetchEvent {
+    private static func requestSpend(accessToken: String, session injected: URLSession?, now: Date) async -> CreditsFetchEvent {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "GET"
         request.timeoutInterval = requestTimeout
@@ -232,17 +321,26 @@ public enum CreditsClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(UsageClient.creditsUserAgent(), forHTTPHeaderField: "User-Agent")
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = requestTimeout
-        configuration.timeoutIntervalForResource = requestTimeout
-        let session = URLSession(configuration: configuration,
+        let session: URLSession
+        if let injected {
+            session = injected
+        } else {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = requestTimeout
+            configuration.timeoutIntervalForResource = requestTimeout
+            session = URLSession(configuration: configuration,
                                  delegate: NoRedirectSessionDelegate.shared,
                                  delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
+        }
+        defer { if injected == nil { session.invalidateAndCancel() } }
 
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { return .transportFailure }
+            if http.statusCode == 429 {
+                let header = http.value(forHTTPHeaderField: "Retry-After")
+                return .throttled(retryAfter: CreditsBackoff.parseRetryAfter(header, now: now))
+            }
             guard http.statusCode == 200 else { return .httpStatus(http.statusCode) }
             guard let spend = try? CreditsParser.parseSpend(data) else { return .malformedResponse }
             return .response(spend)
@@ -337,10 +435,10 @@ public enum CreditsClient {
 /// Keep the bearer request pinned to the one documented-in-code host/path. Redirects are surfaced
 /// as ordinary non-200 responses instead of forwarding the credential to another URL. The roster
 /// requests use it too.
-final class NoRedirectSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    static let shared = NoRedirectSessionDelegate()
+public final class NoRedirectSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    public static let shared = NoRedirectSessionDelegate()
 
-    func urlSession(_ session: URLSession,
+    public func urlSession(_ session: URLSession,
                     task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest,

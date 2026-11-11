@@ -503,11 +503,16 @@ check(!rawRoster.contains("sk-ant"), "roster file has no session material")
 check(rawRoster.contains("ada.297@example.com"), "roster file keeps the email")
 try? FileManager.default.removeItem(at: rosterDir)
 
-print(String(repeating: "-", count: 40))
-if failures == 0 {
-    print("ALL CHECKS PASSED")
-    exit(0)
-} else {
-    print("\(failures) CHECK(S) FAILED")
-    exit(1)
+// Roster and credits back-off checks are async (stubbed URLSession). See RosterChecks.swift.
+Task { @MainActor in
+    await runRosterChecks()
+    print(String(repeating: "-", count: 40))
+    if failures == 0 {
+        print("ALL CHECKS PASSED")
+        exit(0)
+    } else {
+        print("\(failures) CHECK(S) FAILED")
+        exit(1)
+    }
 }
+RunLoop.main.run()

@@ -7,6 +7,10 @@ import PackageDescription
 //
 //   swift run DataLayerCheck    # validate parsing/formatting against fixtures
 //
+// RosterCore builds two app files (the roster OAuth client and the per-account sync) so the checks
+// can drive them with a stubbed URLSession and an in-memory token store. The app compiles the same
+// files directly; the widget never does.
+//
 let package = Package(
     name: "ClaudeUsageCore",
     platforms: [.macOS(.v13)],
@@ -16,9 +20,17 @@ let package = Package(
     ],
     targets: [
         .target(name: "ClaudeUsageCore", path: "Shared"),
+        .target(
+            name: "RosterCore",
+            dependencies: ["ClaudeUsageCore"],
+            path: "ClaudeUsageApp",
+            exclude: ["AccountsWindow.swift", "ClaudeUsageApp.swift", "Info.plist", "Notifications.swift",
+                      "RosterController.swift", "RosterLogin.swift", "RosterSessionStore.swift"],
+            sources: ["RosterAPI.swift", "RosterSync.swift"]
+        ),
         .executableTarget(
             name: "DataLayerCheck",
-            dependencies: ["ClaudeUsageCore"],
+            dependencies: ["ClaudeUsageCore", "RosterCore"],
             path: "Tools/DataLayerCheck"
         ),
     ]

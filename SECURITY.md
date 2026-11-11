@@ -47,8 +47,12 @@ Any non-instant credential read trips the breaker — including one the user app
 read returns in about ten milliseconds, so a `security` call that exits 0 only after more than a
 second means a dialog was shown and answered; that output is discarded exactly like a failure and
 the breaker opens. The guaranteed worst case is therefore one password dialog, ever: it is never
-shown twice. HTTP 401 (including a token mid-refresh), HTTP 429, server errors, malformed endpoint
-data, and network failures hide credits only for the current cycle and do not trip it. No credits
+shown twice. HTTP 401 (including a token mid-refresh), server errors, malformed endpoint data, and
+network failures hide credits only for the current cycle and do not trip it. HTTP 429 does not trip
+it either: it starts an in-memory back-off (the server's `Retry-After`, capped at six hours, else 5
+minutes doubling to one hour) during which neither the Keychain read nor the request happens, and
+the last value for the same account is kept. A 429 logs only the status, the `Retry-After` value,
+and the chosen wait. No credits
 outcome can mark the primary snapshot stale or alter its error.
 
 ## Output and persistence boundary
@@ -121,12 +125,21 @@ Removing a row deletes its Keychain item. It does not revoke the token at Anthro
 `roster.json` is lost, its Keychain items stay until you delete them in Keychain Access.
 
 `roster.json` holds, for each row, an id, the email, the 5-hour and weekly meters, the time of the
-last reading, a stale flag, and a fixed error string. The directory stays mode `0700` and the file
+last reading, a stale flag, a fixed error string, and a `signedOut` flag once the token endpoint has
+refused the row's refresh token. The directory stays mode `0700` and the file
 mode `0600`.
 
 The agent exchanges the refresh token for a short-lived access token when it has none or the one it
 has is about to expire. When the token endpoint returns a new refresh token, the agent saves it
-before it reads usage. The access token stays in memory only, until a minute before it expires, and
+before it reads usage. If the Keychain refuses that save, the new token stays in process memory
+only, is used for the next refresh, and is saved again every cycle; the row says "Couldn't save
+sign-in (Keychain locked?)". When the token endpoint refuses a refresh token (HTTP 401, or 400
+`invalid_grant`), the agent reads the Keychain item once more and retries only if it changed;
+otherwise it sets `signedOut` and sends no more requests for that row until a new sign-in. Other
+400 replies are not treated as a sign-out. Each failed roster request logs one line at the default
+level with the row's UUID, the stage, the HTTP status, the OAuth error code (accepted only as a
+short identifier), and the refresh token's age taken from the Keychain item's modification time;
+tokens, emails, and response bodies are never logged. The access token stays in memory only, until a minute before it expires, and
 is used for `GET https://api.anthropic.com/api/oauth/usage`. These requests refuse redirects, so the
 bearer token is not sent to another address. A roster miss leaves the last meters in place with a
 stale mark. It does not mark the CLI snapshot stale and does not change the CLI snapshot's error.

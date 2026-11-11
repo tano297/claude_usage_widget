@@ -120,7 +120,24 @@ The same line as the email shows how old that reading is, in seconds or minutes.
 A divider separates accounts. Signing in the `claude` account there shows it in both places.
 
 Refresh tokens stay in the Keychain, service `com.claudeusage.app.roster`. `roster.json` stores the
-email and the two meters. See [SECURITY.md](SECURITY.md). Sign-in follows the browser flow in
+email and the two meters. See [SECURITY.md](SECURITY.md).
+
+A row can say:
+
+- **Signed out by a newer sign-in to this account. Sign in again.** The token endpoint refused the
+  saved sign-in (`invalid_grant`). The server does not say why. A likely cause is a newer sign-in
+  to the same account through the same Claude Code client, for example `/login` in Claude Code. The app stops asking for that
+  account until you add it again, and the Subscriptions window shows when it last worked.
+- **Sign in again.** A read was refused (HTTP 401) for a reason the server did not give, or the
+  Keychain item is gone. The app tries again on the next cycle.
+- **Couldn't save sign-in (Keychain locked?)** The server issued a new refresh token, but the
+  Keychain did not take it. The app keeps it in memory, uses it, and saves it again every cycle.
+  Unlock the Mac. Quitting the app before the save works loses that sign-in.
+
+Each refused or failed roster request writes one line to the unified log, with the row's UUID, the
+HTTP status, the OAuth error code, and how long ago the refresh token was saved. No token, email, or
+response text is logged:
+`log show --last 1d --info --predicate 'subsystem == "com.claudeusage.app"'`. Sign-in follows the browser flow in
 [Usage4Claude](https://github.com/f-is-h/Usage4Claude) (MIT). This app does not send inference as
 those accounts.
 
@@ -221,8 +238,11 @@ ever—never a second one on a later refresh. The menu shows the stored fixed re
 happens. Manually switching the option off also prevents reads, while switching it back on clears
 both the manual/automatic disable and its reason.
 
-HTTP 401, rate limiting, server errors, and network failures hide credits for that cycle without
-tripping the breaker. In every case the CLI-derived bars, email, freshness, and error state continue
+HTTP 401, server errors, and network failures hide credits for that cycle without tripping the
+breaker. Rate limiting (HTTP 429) starts a back-off: no Keychain read and no request until it ends,
+and the last value for the same account stays on screen. The wait is the server's `Retry-After`
+when it sends one (at most six hours), else 5 minutes, doubling to at most one hour. A good reply
+ends it, and so does turning **Show usage credits** off and on. In every case the CLI-derived bars, email, freshness, and error state continue
 normally.
 
 **Launch at login.** The agent must be running for the widget to stay current, so its first launch

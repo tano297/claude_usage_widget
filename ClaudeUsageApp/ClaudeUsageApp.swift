@@ -45,6 +45,8 @@ final class UsageAgent: ObservableObject {
     @Published private(set) var snapshot: UsageSnapshot?
     @Published private(set) var isRefreshing = false
     let creditsGate = UserDefaultsCreditsFetchGate()
+    /// After an HTTP 429 from the credits endpoint, no credits request until this wait ends.
+    let creditsBackoff = CreditsBackoff()
     /// Extra subscriptions. Refreshed after the CLI snapshot is saved. Its errors do not touch that snapshot.
     let roster: RosterController
 
@@ -93,7 +95,11 @@ final class UsageAgent: ObservableObject {
         // Credits are supplemental. Only a fresh primary snapshot gets merged, and a miss never
         // changes the CLI pipeline's freshness or fixed error state.
         if !snap.stale {
-            snap.credits = await CreditsClient.fetchCredits(gate: creditsGate)
+            // During a 429 back-off the last good value stays, but only for the same account.
+            let previous = snapshot?.email == snap.email ? snapshot?.credits : nil
+            snap.credits = await CreditsClient.fetchCredits(gate: creditsGate,
+                                                            backoff: creditsBackoff,
+                                                            previous: previous)
         }
         try? SharedStore.save(snap)
         snapshot = snap
@@ -137,6 +143,7 @@ final class UsageAgent: ObservableObject {
         if enabled {
             // A deliberate re-enable clears the breaker and should get one immediate credits retry.
             lastFetchAt = .distantPast
+            creditsBackoff.reset()
             Task { await refresh() }
         } else if var current = snapshot {
             current.credits = nil
